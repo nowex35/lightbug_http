@@ -15,6 +15,9 @@ from .session import SessionManager, MCPSession, create_session_manager
 from .tools import MCPTool, MCPToolResult, MCPToolRegistry, MCPToolParameter, MCPToolAnnotation
 from .tools import create_string_parameter, create_number_parameter, create_boolean_parameter, create_enum_parameter
 
+# Utility functions
+from .utils import generate_uuid, generate_connection_id, generate_session_id, current_time_ms
+
 # Async I/O and concurrent processing (Phase 3 - Experimental)
 # Note: These are experimental features for future development
 # from .async_io import AsyncEventLoop, AsyncEvent, AsyncConnection, create_async_event_loop

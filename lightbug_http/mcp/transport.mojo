@@ -14,7 +14,6 @@ from lightbug_http.service import HTTPService
 from .parser import JSONRPCParser, JSONRPCSerializer, MessageType
 from .jsonrpc import JSONRPCError, parse_error, invalid_request, method_not_found, internal_error, JSONRPCRequest, JSONRPCResponse, JSONRPCNotification
 from .server import MCPServer
-from .session import extract_session_id_from_header
 
 @value
 struct MCPTransportError(Movable):
@@ -74,6 +73,8 @@ struct HTTPTransport(HTTPService):
             # Process the MCP message
             var response = self._process_mcp_message(request_body, req)
             
+            print("DEBUG: Sending HTTP response with body: " + response)
+            
             # Create HTTP response with appropriate headers
             _ = self._create_response_headers(req)
             return OK(bytes(response), content_type="application/json")
@@ -126,26 +127,35 @@ struct HTTPTransport(HTTPService):
         # Extract session ID from headers
         var session_id = self._extract_session_id(req)
         
+        print("DEBUG: Processing MCP message: " + json_body)
+        
         try:
             var message = parser.parse_message(json_body)
+            print("DEBUG: Message parsed successfully")
             
             # Handle different message types
             if message.isa[JSONRPCRequest]():
                 var request = message[JSONRPCRequest]
+                print("DEBUG: Processing request: " + request.method)
                 # Pass session ID to handler for session management
                 var response = self.mcp_handler.handle_request_with_session(request, session_id)
-                return serializer.serialize_response(response)
+                var serialized_response = serializer.serialize_response(response)
+                print("DEBUG: Final serialized response: " + serialized_response)
+                return serialized_response
             elif message.isa[JSONRPCNotification]():
                 var notification = message[JSONRPCNotification]
+                print("DEBUG: Processing notification: " + notification.method)
                 self.mcp_handler.handle_notification_with_session(notification, session_id)
                 return ""  # Notifications don't expect responses
             else:
                 # Responses are not expected in server context
+                print("DEBUG: Unexpected message type - treating as invalid request")
                 var error_response = self._create_error_response("", invalid_request())
                 return error_response
                 
         except e:
             # Return parse error for invalid JSON-RPC
+            print("DEBUG: JSON-RPC parse error: " + String(e))
             var error_response = self._create_error_response("", parse_error())
             return error_response
     

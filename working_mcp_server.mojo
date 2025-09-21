@@ -88,7 +88,10 @@ fn main() raises:
     except e:
         print("DEBUG: Echo tool JSON serialization failed: " + String(e))
     
-    mcp_server.register_tool(echo_tool, example_echo_tool)
+    try:
+        mcp_server.register_tool(echo_tool, example_echo_tool)
+    except e:
+        print("ERROR: Failed to register echo tool: " + String(e))
     
     # Math tool with parameter validation
     var math_tool = MCPTool("math_add", "Performs addition of two numbers", "math")
@@ -108,7 +111,10 @@ fn main() raises:
     except e:
         print("DEBUG: Math tool JSON serialization failed: " + String(e))
     
-    mcp_server.register_tool(math_tool, example_math_tool)
+    try:
+        mcp_server.register_tool(math_tool, example_math_tool)
+    except e:
+        print("ERROR: Failed to register math tool: " + String(e))
     
     # Start the MCP server
     mcp_server.start()
@@ -120,7 +126,6 @@ fn main() raises:
     # Debug: Check if tools are actually registered
     var tools_registry = mcp_server.get_tools_registry()
     var registered_tools = tools_registry.list_tools()
-    print("Tools registered: " + String(len(registered_tools)) + " (echo, math_add)")
     for i in range(len(registered_tools)):
         var tool = registered_tools[i]
         print("  - Tool " + String(i) + ": " + tool.name + " (enabled: " + String(tool.enabled) + ")")
@@ -162,7 +167,7 @@ fn main() raises:
     
     try:
         # Start listening for HTTP requests
-        http_server.listen_and_serve[HTTPTransport]("localhost:8082", http_transport)
+        http_server.listen_and_serve[HTTPTransport]("localhost:8081", http_transport)
     except e:
         print("Server error: " + String(e))
     finally:

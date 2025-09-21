@@ -5,18 +5,7 @@ registration, parameter validation, and execution.
 """
 
 from collections import Dict, List
-
-# Local type definitions to avoid circular imports
-@value
-struct JSONRPCError(Movable):
-    var code: Int
-    var message: String
-    var data: String
-    
-    fn __init__(out self, code: Int, message: String, data: String = ""):
-        self.code = code
-        self.message = message
-        self.data = data
+from lightbug_http.mcp.jsonrpc import JSONRPCError
 
 # Tool input schema types
 alias MCPToolInputType = String
@@ -124,7 +113,7 @@ struct MCPTool(Movable):
         """Convert tool definition to MCP JSON format."""
         var json = String('{"name":"', self.name, '","description":"', self.description, '"')
         
-        # Add input schema
+        # Add input schema with required parameters inside
         json = json + ',"inputSchema":{"type":"object","properties":{'
         var first = True
         for param_name in self.input_schema:
@@ -134,9 +123,9 @@ struct MCPTool(Movable):
             json = json + '"' + param_name + '":' + param.to_json()
             first = False
         
-        json = json + "}}"
+        json = json + "}"
         
-        # Add required parameters
+        # Add required parameters inside inputSchema
         if len(self.required_params) > 0:
             json = json + ',"required":['
             for i in range(len(self.required_params)):
@@ -145,29 +134,11 @@ struct MCPTool(Movable):
                 json = json + '"' + self.required_params[i] + '"'
             json = json + "]"
         
-        # Add annotations
-        json = json + ',"annotations":{'
-        json = json + '"dangerLevel":"' + self.annotations.danger_level + '"'
-        json = json + ',"rateLimit":' + String(self.annotations.rate_limit)
-        json = json + ',"requiresAuth":' + String(self.annotations.requires_auth)
-        
-        if len(self.annotations.audience) > 0:
-            json = json + ',"audience":['
-            for i in range(len(self.annotations.audience)):
-                if i > 0:
-                    json = json + ","
-                json = json + '"' + self.annotations.audience[i] + '"'
-            json = json + "]"
-        
-        if len(self.annotations.tags) > 0:
-            json = json + ',"tags":['
-            for i in range(len(self.annotations.tags)):
-                if i > 0:
-                    json = json + ","
-                json = json + '"' + self.annotations.tags[i] + '"'
-            json = json + "]"
-        
         json = json + "}"
+        
+        # Note: Annotations are optional and may not be supported by all MCP clients
+        # For maximum compatibility, we'll omit them for now
+        
         json = json + "}"
         return json
     
@@ -507,8 +478,9 @@ struct MCPToolRegistry(Movable):
     
     fn _execute_with_timeout(self, executor: ToolExecutionFunc, arguments_json: String) raises -> MCPToolResult:
         """Execute a tool function with timeout protection."""
-        # TODO: Implement actual timeout mechanism
-        # For now, just execute directly
+        # TODO: Implement timeout mechanism in future version (Phase 4)
+        # Current implementation: Direct execution without timeout
+        # Requires async I/O system for proper timeout handling
         return executor(arguments_json)
     
     fn configure_safety(mut self, max_execution_time_ms: Int, max_concurrent_executions: Int):
@@ -560,44 +532,6 @@ struct MCPToolRegistry(Movable):
             self.tools[tool_name] = tool
         except:
             raise Error("Failed to disable tool: " + tool_name)
-    
-    fn enable_all_tools(mut self):
-        """Enable all tools."""
-        self.enabled = True
-        for tool_name in self.tools:
-            try:
-                var tool = self.tools[tool_name]
-                tool.enabled = True
-                self.tools[tool_name] = tool
-            except:
-                print("Failed to enable tool: " + tool_name)
-    
-    fn disable_all_tools(mut self):
-        """Disable all tools."""
-        self.enabled = False
-        for tool_name in self.tools:
-            try:
-                var tool = self.tools[tool_name]
-                tool.enabled = False
-                self.tools[tool_name] = tool
-            except:
-                print("Failed to disable tool: " + tool_name)
-    
-    fn get_tool_count(self) -> Int:
-        """Get the number of registered tools."""
-        return len(self.tools)
-    
-    fn get_enabled_tool_count(self) -> Int:
-        """Get the number of enabled tools."""
-        var count = 0
-        for tool_name in self.tools:
-            try:
-                var tool = self.tools[tool_name]
-                if tool.enabled:
-                    count += 1
-            except:
-                continue
-        return count
 
 # Utility functions for creating common tool parameter types
 

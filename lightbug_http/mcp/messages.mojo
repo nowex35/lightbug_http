@@ -181,7 +181,7 @@ struct MCPMessage(Movable):
         self.request_id = request_id
         self.method = method
         self.category = extract_method_category(method)
-        self.timestamp = 0  # TODO: Get actual timestamp
+        self.timestamp = 0  # TODO: Get actual timestamp, Pythonのtime.time()を使用
         self.raw_json = raw_json
     
     fn is_valid_mcp_message(self) -> Bool:

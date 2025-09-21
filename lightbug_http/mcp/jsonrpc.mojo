@@ -21,9 +21,9 @@ alias INTERNAL_ERROR = -32603
 struct JSONRPCError(Movable):
     """JSON-RPC 2.0 Error object."""
     
-    var code: Int
-    var message: String
-    var data: String  # Optional additional error data as JSON string
+    var code: Int # エラーコード
+    var message: String # エラーメッセージ
+    var data: String  # オプションの追加エラーデータとしてJSON文字列
     
     fn __init__(out self, code: Int, message: String, data: String = ""):
         self.code = code
@@ -49,14 +49,20 @@ struct JSONRPCRequest(Movable):
     - params: object (optional)
     """
     
-    var jsonrpc: String
+    var jsonrpc: String # JSON-RPCバージョン
     var id: String  # Can be string or number, stored as string
-    var method: String
+    var method: String # メソッド名 "tools/call"や"initialize"など。
     var params: String  # JSON string for parameters
     
     fn __init__(out self, id: String, method: String, params: String = "{}"):
         self.jsonrpc = JSONRPCVersion
         self.id = id
+        self.method = method
+        self.params = params
+    
+    fn __init__(out self, id: Int, method: String, params: String = "{}"):
+        self.jsonrpc = JSONRPCVersion
+        self.id = String(id)
         self.method = method
         self.params = params
     
@@ -180,26 +186,6 @@ fn internal_error() -> JSONRPCError:
     """Internal error - Internal JSON-RPC error."""
     return JSONRPCError(INTERNAL_ERROR, "Internal error")
 
-# Extended error functions with custom messages
-fn parse_error_with_message(message: String) -> JSONRPCError:
-    """Parse error with custom message."""
-    return JSONRPCError(PARSE_ERROR, message)
-
-fn invalid_request_with_message(message: String) -> JSONRPCError:
-    """Invalid Request with custom message."""
-    return JSONRPCError(INVALID_REQUEST, message)
-
-fn method_not_found_with_message(method: String) -> JSONRPCError:
-    """Method not found with method name."""
-    return JSONRPCError(METHOD_NOT_FOUND, "Method not found: " + method)
-
-fn invalid_params_with_message(message: String) -> JSONRPCError:
-    """Invalid params with detailed message."""
-    return JSONRPCError(INVALID_PARAMS, message)
-
-fn internal_error_with_message(message: String) -> JSONRPCError:
-    """Internal error with detailed message."""
-    return JSONRPCError(INTERNAL_ERROR, message)
 
 # Server error functions (MCP-specific errors)
 fn server_not_initialized() -> JSONRPCError:
@@ -222,78 +208,16 @@ fn tool_execution_failed(tool_name: String, reason: String) -> JSONRPCError:
     """Tool execution failed error."""
     return JSONRPCError(-32004, "Tool execution failed for " + tool_name + ": " + reason)
 
-fn resource_not_found(uri: String) -> JSONRPCError:
-    """Resource not found error."""
-    return JSONRPCError(-32005, "Resource not found: " + uri)
-
-fn resource_access_denied(uri: String) -> JSONRPCError:
-    """Resource access denied error."""
-    return JSONRPCError(-32006, "Access denied to resource: " + uri)
-
-fn prompt_not_found(name: String) -> JSONRPCError:
-    """Prompt not found error."""
-    return JSONRPCError(-32007, "Prompt not found: " + name)
-
 fn feature_not_implemented(feature: String) -> JSONRPCError:
     """Feature not implemented error."""
     return JSONRPCError(-32601, feature + " is not currently implemented")
 
-fn capability_not_enabled(capability: String) -> JSONRPCError:
-    """Capability not enabled error."""
-    return JSONRPCError(-32008, "Capability not enabled: " + capability)
 
-fn connection_error(message: String) -> JSONRPCError:
-    """Connection error."""
-    return JSONRPCError(-32009, "Connection error: " + message)
+# Utility function to create custom errors
+fn create_error(code: Int, message: String) -> JSONRPCError:
+    """Create a custom JSON-RPC error."""
+    return JSONRPCError(code, message)
 
-fn timeout_error(operation: String) -> JSONRPCError:
-    """Timeout error."""
-    return JSONRPCError(-32010, "Operation timeout: " + operation)
-
-fn rate_limit_exceeded() -> JSONRPCError:
-    """Rate limit exceeded error."""
-    return JSONRPCError(-32011, "Rate limit exceeded")
-
-fn security_violation(reason: String) -> JSONRPCError:
-    """Security violation error."""
-    return JSONRPCError(-32012, "Security violation: " + reason)
-
-# Utility functions for error validation and categorization
-fn is_standard_error(error_code: Int) -> Bool:
-    """Check if error code is a standard JSON-RPC error."""
-    return error_code >= -32768 and error_code <= -32000
-
-fn is_server_error(error_code: Int) -> Bool:
-    """Check if error code is a server-defined error."""
-    return error_code >= -32099 and error_code <= -32000
-
-fn get_error_category(error_code: Int) -> String:
-    """Get error category based on error code."""
-    if error_code == PARSE_ERROR:
-        return "parse"
-    elif error_code == INVALID_REQUEST:
-        return "request"
-    elif error_code == METHOD_NOT_FOUND:
-        return "method"
-    elif error_code == INVALID_PARAMS:
-        return "params"
-    elif error_code == INTERNAL_ERROR:
-        return "internal"
-    elif is_server_error(error_code):
-        return "server"
-    else:
-        return "unknown"
-
-fn create_error_response(id: String, error_code: Int, message: String, data: String = "") -> JSONRPCResponse:
-    """Create an error response with optional data."""
-    var error = JSONRPCError(error_code, message)
-    if data != "":
-        # Note: Current JSONRPCError doesn't support data field
-        # This would need to be extended in the JSONRPCError structure
-        pass
-    return JSONRPCResponse.error_response(id, error)
-
-# Error logging and debugging utilities
 fn log_error(error: JSONRPCError, context: String = ""):
     """Log an error for debugging."""
     var log_message = "JSON-RPC Error: " + error.message
