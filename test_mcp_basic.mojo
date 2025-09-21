@@ -3,11 +3,12 @@
 """Basic test for MCP Phase 3 implementation."""
 
 from lightbug_http.mcp import MCPServer, create_session_manager
-from lightbug_http.mcp.server import MCPTool, MCPToolResult
+from lightbug_http.mcp.tools import MCPTool, MCPToolResult, create_string_parameter
 
 fn test_tool(arguments_json: String) raises -> MCPToolResult:
     """Test tool implementation."""
     var result = MCPToolResult()
+    result.add_text_content("Test tool executed with: " + arguments_json)
     return result
 
 fn main() raises:
@@ -29,7 +30,9 @@ fn main() raises:
     
     # Test tool registration
     print("\n3. Testing Tool Registration:")
-    var tool = MCPTool("test_tool", "A test tool")
+    var tool = MCPTool("test_tool", "A test tool", "testing")
+    var param = create_string_parameter("input", "Test input parameter", True)
+    tool.add_parameter(param)
     server.register_tool(tool, test_tool)
     print("   ✓ Tool registered successfully")
     

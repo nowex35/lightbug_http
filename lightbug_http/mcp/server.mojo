@@ -314,7 +314,45 @@ struct MCPServer(MCPHandler):
     
     fn _handle_tools_request(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
         """Handle tools/* requests."""
-        return self.tools_handler.handle_request(request)
+        if request.method == "tools/list":
+            var tools = self.tools_registry.list_tools()
+            print("DEBUG: Found " + String(len(tools)) + " tools to serialize")
+            var tools_json = String('{"tools":[')
+            var added_count = 0
+            
+            for i in range(len(tools)):
+                try:
+                    var tool_json = tools[i].to_json()
+                    if added_count > 0:
+                        tools_json = tools_json + ","
+                    tools_json = tools_json + tool_json
+                    added_count += 1
+                    print("DEBUG: Successfully serialized tool: " + tools[i].name)
+                except e:
+                    print("DEBUG: Failed to serialize tool " + tools[i].name + ": " + String(e))
+                    continue
+            
+            tools_json = tools_json + "]}"
+            print("DEBUG: Final tools JSON: " + tools_json)
+            return JSONRPCResponse.success(request.id, tools_json)
+        elif request.method == "tools/call":
+            try:
+                # Parse tool name and arguments from request params
+                var tool_info = self._parse_tool_call_params(request.params)
+                
+                # Execute the tool
+                var result = self.tools_registry.execute_tool(tool_info.name, tool_info.arguments)
+                
+                # Return the result
+                return JSONRPCResponse.success(request.id, result.to_json())
+                
+            except e:
+                var error = tool_execution_failed("unknown", "execution error")
+                log_error(error, "tools_call")
+                return JSONRPCResponse.error_response(request.id, error)
+        else:
+            var error = method_not_found()
+            return JSONRPCResponse.error_response(request.id, error)
     
     fn _handle_resources_request(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
         """Handle resources/* requests."""
@@ -449,6 +487,72 @@ struct MCPServer(MCPHandler):
     fn terminate_session(mut self, session_id: String) raises:
         """Terminate a specific session."""
         self.session_manager.terminate_session(session_id)
+    
+    fn _parse_tool_call_params(self, params_json: String) raises -> ToolCallParams:
+        """Parse tool call parameters from JSON."""
+        # Expected format: {"name": "tool_name", "arguments": {...}}
+        
+        print("DEBUG: Parsing tool call params: " + params_json)
+        
+        # Simple JSON parsing for tool call parameters
+        var name = String("unknown")
+        var arguments = String("{}")
+        
+        # Extract tool name - handle both single and double quotes
+        var name_start = params_json.find("'name'")
+        if name_start == -1:
+            name_start = params_json.find('"name"')
+        
+        if name_start != -1:
+            var name_colon = params_json.find(':', name_start)
+            if name_colon != -1:
+                # Look for either single or double quote
+                var name_quote_start = params_json.find("'", name_colon)
+                var quote_char = String("'")
+                if name_quote_start == -1:
+                    name_quote_start = params_json.find('"', name_colon)
+                    quote_char = String('"')
+                
+                if name_quote_start != -1:
+                    var name_quote_end = params_json.find(quote_char, name_quote_start + 1)
+                    if name_quote_end != -1:
+                        name = params_json[name_quote_start + 1:name_quote_end]
+                        print("DEBUG: Extracted tool name: " + name)
+        
+        # Extract arguments object - handle both single and double quotes
+        var args_start = params_json.find("'arguments'")
+        if args_start == -1:
+            args_start = params_json.find('"arguments"')
+        
+        if args_start != -1:
+            var args_colon = params_json.find(':', args_start)
+            if args_colon != -1:
+                # Find the opening brace of the arguments object
+                var args_brace_start = params_json.find('{', args_colon)
+                if args_brace_start != -1:
+                    # Find the matching closing brace
+                    var brace_count = 1
+                    var pos = args_brace_start + 1
+                    var args_end = -1
+                    
+                    while pos < len(params_json) and brace_count > 0:
+                        if params_json[pos] == '{':
+                            brace_count += 1
+                        elif params_json[pos] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                args_end = pos + 1
+                                break
+                        pos += 1
+                    
+                    if args_end != -1:
+                        arguments = params_json[args_brace_start:args_end]
+                        # Convert single quotes to double quotes for valid JSON
+                        arguments = arguments.replace("'", '"')
+                        print("DEBUG: Extracted arguments: " + arguments)
+        
+        print("DEBUG: Final parsed - name: " + name + ", arguments: " + arguments)
+        return ToolCallParams(name, arguments)
 
 # Helper structure for initialize parameters
 @value
@@ -492,14 +596,24 @@ struct ToolsHandler(RequestHandler):
     fn _handle_tools_list(self, request: JSONRPCRequest) raises -> JSONRPCResponse:
         """Handle tools/list request."""
         var tools = self.tools_registry.list_tools()
-        var tools_json = String("{" + "tools" + ":[")
+        print("DEBUG: Found " + String(len(tools)) + " tools to serialize")
+        var tools_json = String('{"tools":[')
+        var added_count = 0
         
         for i in range(len(tools)):
-            if i > 0:
-                tools_json = tools_json + ","
-            tools_json = tools_json + tools[i].to_json()
+            try:
+                var tool_json = tools[i].to_json()
+                if added_count > 0:
+                    tools_json = tools_json + ","
+                tools_json = tools_json + tool_json
+                added_count += 1
+                print("DEBUG: Successfully serialized tool: " + tools[i].name)
+            except e:
+                print("DEBUG: Failed to serialize tool " + tools[i].name + ": " + String(e))
+                continue
         
         tools_json = tools_json + "]}"
+        print("DEBUG: Final tools JSON: " + tools_json)
         return JSONRPCResponse.success(request.id, tools_json)
     
     fn _handle_tools_call(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
@@ -521,9 +635,69 @@ struct ToolsHandler(RequestHandler):
     
     fn _parse_tool_call_params(self, params_json: String) raises -> ToolCallParams:
         """Parse tool call parameters from JSON."""
-        # TODO: Implement proper JSON parsing
-        # For now, return default values
-        return ToolCallParams()
+        # Expected format: {"name": "tool_name", "arguments": {...}}
+        
+        print("DEBUG: Parsing tool call params: " + params_json)
+        
+        # Simple JSON parsing for tool call parameters
+        var name = String("unknown")
+        var arguments = String("{}")
+        
+        # Extract tool name - handle both single and double quotes
+        var name_start = params_json.find("'name'")
+        if name_start == -1:
+            name_start = params_json.find('"name"')
+        
+        if name_start != -1:
+            var name_colon = params_json.find(':', name_start)
+            if name_colon != -1:
+                # Look for either single or double quote
+                var name_quote_start = params_json.find("'", name_colon)
+                var quote_char = String("'")
+                if name_quote_start == -1:
+                    name_quote_start = params_json.find('"', name_colon)
+                    quote_char = String('"')
+                
+                if name_quote_start != -1:
+                    var name_quote_end = params_json.find(quote_char, name_quote_start + 1)
+                    if name_quote_end != -1:
+                        name = params_json[name_quote_start + 1:name_quote_end]
+                        print("DEBUG: Extracted tool name: " + name)
+        
+        # Extract arguments object - handle both single and double quotes
+        var args_start = params_json.find("'arguments'")
+        if args_start == -1:
+            args_start = params_json.find('"arguments"')
+        
+        if args_start != -1:
+            var args_colon = params_json.find(':', args_start)
+            if args_colon != -1:
+                # Find the opening brace of the arguments object
+                var args_brace_start = params_json.find('{', args_colon)
+                if args_brace_start != -1:
+                    # Find the matching closing brace
+                    var brace_count = 1
+                    var pos = args_brace_start + 1
+                    var args_end = -1
+                    
+                    while pos < len(params_json) and brace_count > 0:
+                        if params_json[pos] == '{':
+                            brace_count += 1
+                        elif params_json[pos] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                args_end = pos + 1
+                                break
+                        pos += 1
+                    
+                    if args_end != -1:
+                        arguments = params_json[args_brace_start:args_end]
+                        # Convert single quotes to double quotes for valid JSON
+                        arguments = arguments.replace("'", '"')
+                        print("DEBUG: Extracted arguments: " + arguments)
+        
+        print("DEBUG: Final parsed - name: " + name + ", arguments: " + arguments)
+        return ToolCallParams(name, arguments)
 
 @value
 struct ToolCallParams(Movable):

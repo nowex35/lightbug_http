@@ -214,8 +214,8 @@ struct SessionManager(Movable):
     fn _generate_session_id(self) -> String:
         """Generate a UUID v4 session ID."""
         # Generate random numbers for UUID v4
-        var random1 = random_si64(-9223372036854775808, 9223372036854775807)
-        var random2 = random_si64(-9223372036854775808, 9223372036854775807)
+        var _ = random_si64(-9223372036854775808, 9223372036854775807)
+        var _ = random_si64(-9223372036854775808, 9223372036854775807)
         
         # Convert to hex string - simplified UUID v4 format
         var result = String()

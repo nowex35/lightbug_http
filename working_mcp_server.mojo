@@ -19,7 +19,44 @@ fn example_echo_tool(arguments_json: String) raises -> MCPToolResult:
 fn example_math_tool(arguments_json: String) raises -> MCPToolResult:
     """Example math tool for addition."""
     var result = MCPToolResult()
-    result.add_text_content("Math result: 2 + 3 = 5")
+    
+    # Parse JSON arguments to extract 'a' and 'b' values
+    var a_value = String("0")
+    var b_value = String("0")
+    
+    # Extract 'a' parameter
+    var a_start = arguments_json.find('"a"')
+    if a_start != -1:
+        var a_colon = arguments_json.find(':', a_start)
+        if a_colon != -1:
+            var a_quote_start = arguments_json.find('"', a_colon)
+            if a_quote_start != -1:
+                var a_quote_end = arguments_json.find('"', a_quote_start + 1)
+                if a_quote_end != -1:
+                    a_value = arguments_json[a_quote_start + 1:a_quote_end]
+    
+    # Extract 'b' parameter
+    var b_start = arguments_json.find('"b"')
+    if b_start != -1:
+        var b_colon = arguments_json.find(':', b_start)
+        if b_colon != -1:
+            var b_quote_start = arguments_json.find('"', b_colon)
+            if b_quote_start != -1:
+                var b_quote_end = arguments_json.find('"', b_quote_start + 1)
+                if b_quote_end != -1:
+                    b_value = arguments_json[b_quote_start + 1:b_quote_end]
+    
+    # Convert strings to integers and perform addition
+    try:
+        var a_int = atol(a_value)
+        var b_int = atol(b_value)
+        var sum = a_int + b_int
+        
+        var response = String("Math result: ") + a_value + " + " + b_value + " = " + String(sum)
+        result.add_text_content(response)
+    except:
+        result.add_text_content("Error: Invalid numbers provided. Please provide valid integer values for 'a' and 'b'.")
+    
     return result
 
 fn main() raises:
@@ -43,6 +80,14 @@ fn main() raises:
     echo_annotation.add_tag("demo")
     echo_annotation.add_tag("text")
     echo_tool.annotations = echo_annotation
+    
+    # Debug: Test JSON serialization
+    try:
+        var echo_json = echo_tool.to_json()
+        print("DEBUG: Echo tool JSON: " + echo_json)
+    except e:
+        print("DEBUG: Echo tool JSON serialization failed: " + String(e))
+    
     mcp_server.register_tool(echo_tool, example_echo_tool)
     
     # Math tool with parameter validation
@@ -55,6 +100,14 @@ fn main() raises:
     math_annotation.add_tag("math")
     math_annotation.add_tag("calculation")
     math_tool.annotations = math_annotation
+    
+    # Debug: Test JSON serialization
+    try:
+        var math_json = math_tool.to_json()
+        print("DEBUG: Math tool JSON: " + math_json)
+    except e:
+        print("DEBUG: Math tool JSON serialization failed: " + String(e))
+    
     mcp_server.register_tool(math_tool, example_math_tool)
     
     # Start the MCP server
@@ -63,12 +116,20 @@ fn main() raises:
     print("MCP server initialized successfully")
     print("Server: " + mcp_server.get_server_info().name + " v" + mcp_server.get_server_info().version)
     print("Capabilities: tools=" + String(mcp_server.get_server_capabilities().tools))
-    print("Tools registered: 2 (echo, math_add)")
+    
+    # Debug: Check if tools are actually registered
+    var tools_registry = mcp_server.get_tools_registry()
+    var registered_tools = tools_registry.list_tools()
+    print("Tools registered: " + String(len(registered_tools)) + " (echo, math_add)")
+    for i in range(len(registered_tools)):
+        var tool = registered_tools[i]
+        print("  - Tool " + String(i) + ": " + tool.name + " (enabled: " + String(tool.enabled) + ")")
+    
     print("Active sessions: " + String(mcp_server.get_active_session_count()))
     print()
     
-    # Create HTTP transport with the MCP server as handler
-    var http_transport = HTTPTransport(mcp_server)
+    # Create HTTP transport with the MCP server as handler (disable Origin validation for testing)
+    var http_transport = HTTPTransport(mcp_server, List[String](), False)
     
     # Create underlying HTTP server
     var http_server = Server(
@@ -101,7 +162,7 @@ fn main() raises:
     
     try:
         # Start listening for HTTP requests
-        http_server.listen_and_serve[HTTPTransport]("localhost:8081", http_transport)
+        http_server.listen_and_serve[HTTPTransport]("localhost:8082", http_transport)
     except e:
         print("Server error: " + String(e))
     finally:
