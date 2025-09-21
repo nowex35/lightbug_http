@@ -8,51 +8,8 @@ from collections import Dict
 from .jsonrpc import JSONRPCRequest, JSONRPCResponse, JSONRPCNotification, JSONRPCError, method_not_found, invalid_params, internal_error, server_not_initialized, unsupported_protocol_version, tool_not_found, tool_execution_failed, feature_not_implemented, log_error
 from .messages import MCPServerInfo, MCPCapabilities, create_initialize_response, MCP_PROTOCOL_VERSION, is_compatible_version
 from .transport import MCPHandler
-# Due to module import issues, define simplified stubs here
-@value
-struct MCPTool(Movable):
-    var name: String
-    var description: String
-    var enabled: Bool
-    
-    fn __init__(out self, name: String = "", description: String = "", enabled: Bool = True):
-        self.name = name
-        self.description = description
-        self.enabled = enabled
-    
-    fn to_json(self) -> String:
-        return String('{"name":"', self.name, '","description":"', self.description, '","enabled":', String(self.enabled), '}')
-
-@value
-struct MCPToolResult(Movable):
-    var is_error: Bool
-    var content: String
-    
-    fn __init__(out self, is_error: Bool = False, content: String = ""):
-        self.is_error = is_error
-        self.content = content
-    
-    fn to_json(self) -> String:
-        return String('{"content":"', self.content, '","isError":', String(self.is_error), '}')
-
-@value
-struct MCPToolRegistry(Movable):
-    var enabled: Bool
-    
-    fn __init__(out self):
-        self.enabled = True
-    
-    fn register_tool(mut self, tool: MCPTool, executor: fn(String) raises -> MCPToolResult) raises:
-        print("Tool registered: " + tool.name)
-    
-    fn unregister_tool(mut self, tool_name: String) raises:
-        print("Tool unregistered: " + tool_name)
-    
-    fn list_tools(self) -> List[MCPTool]:
-        return List[MCPTool]()
-    
-    fn execute_tool(mut self, tool_name: String, arguments_json: String) raises -> MCPToolResult:
-        return MCPToolResult(False, "Tool execution not implemented")
+from .session import SessionManager, MCPSession
+from .tools import MCPTool, MCPToolResult, MCPToolRegistry, ToolExecutionFunc
 
 # Connection states
 alias ConnectionState = Int
@@ -92,7 +49,7 @@ struct MCPConnection(Movable):
         return self.state == READY
 
 @value
-struct MCPServer:
+struct MCPServer(MCPHandler):
     """Main MCP server implementation.
     
     This server handles:
@@ -100,11 +57,13 @@ struct MCPServer:
     - Protocol version negotiation
     - Capability negotiation
     - Request routing to appropriate handlers
+    - Session management with timeout monitoring
     """
     
     var server_info: MCPServerInfo
     var server_capabilities: MCPCapabilities
     var connections: Dict[String, MCPConnection]
+    var session_manager: SessionManager
     var tools_registry: MCPToolRegistry
     var tools_handler: ToolsHandler
     var resources_handler: ResourcesHandler
@@ -123,6 +82,7 @@ struct MCPServer:
             logging=True
         )
         self.connections = Dict[String, MCPConnection]()
+        self.session_manager = SessionManager()
         self.tools_registry = MCPToolRegistry()
         self.tools_handler = ToolsHandler(self.tools_registry)
         self.resources_handler = ResourcesHandler()
@@ -184,6 +144,47 @@ struct MCPServer:
             # Handle various notification types
             pass
     
+    fn handle_request_with_session(mut self, request: JSONRPCRequest, session_id: String) raises -> JSONRPCResponse:
+        """Handle incoming JSON-RPC requests with session management."""
+        if not self.is_running:
+            var error = server_not_initialized()
+            log_error(error, "handle_request_with_session")
+            return JSONRPCResponse.error_response(request.id, error)
+        
+        # Perform session cleanup
+        _ = self.session_manager.cleanup_expired_sessions()
+        
+        # Handle session-aware request
+        if request.method == "initialize":
+            return self._handle_initialize_with_session(request, session_id)
+        else:
+            # For other requests, validate session if provided
+            if session_id != "":
+                try:
+                    self.session_manager.update_session_activity(session_id)
+                except:
+                    # Invalid session ID, continue with regular handling
+                    pass
+            
+            # Delegate to regular handler
+            return self.handle_request(request)
+    
+    fn handle_notification_with_session(mut self, notification: JSONRPCNotification, session_id: String) raises:
+        """Handle incoming JSON-RPC notifications with session management."""
+        if not self.is_running:
+            return
+        
+        # Update session activity if session exists
+        if session_id != "":
+            try:
+                self.session_manager.update_session_activity(session_id)
+            except:
+                # Invalid session ID, continue with regular handling
+                pass
+        
+        # Delegate to regular handler
+        self.handle_notification(notification)
+    
     fn _handle_initialize(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
         """Handle the initialize request from a client."""
         try:
@@ -229,6 +230,76 @@ struct MCPServer:
         except e:
             var error = internal_error()
             log_error(error, "initialize_failed")
+            return JSONRPCResponse.error_response(request.id, error)
+    
+    fn _handle_initialize_with_session(mut self, request: JSONRPCRequest, session_id: String) raises -> JSONRPCResponse:
+        """Handle the initialize request with session management."""
+        try:
+            # Extract connection ID from request (or generate one)
+            var connection_id = self._generate_connection_id()
+            
+            # Parse initialization parameters
+            var init_params = self._parse_initialize_params(request.params)
+            
+            # Validate protocol version
+            if not is_compatible_version(init_params.protocol_version):
+                var error = unsupported_protocol_version(init_params.protocol_version)
+                log_error(error, "initialize_with_session")
+                return JSONRPCResponse.error_response(request.id, error)
+            
+            # Create or manage session
+            var effective_session_id = session_id
+            if session_id == "":
+                # No session ID provided, create a new session
+                var client_info = String('{"name":"', init_params.client_name, '","version":"', init_params.client_version, '"}')
+                effective_session_id = self.session_manager.create_session(connection_id, client_info)
+                print("New session created: " + effective_session_id)
+            else:
+                # Session ID provided, validate and update
+                try:
+                    var session = self.session_manager.get_session(session_id)
+                    if session.connection_id != connection_id:
+                        # Associate session with new connection
+                        self.session_manager.terminate_session_by_connection(session.connection_id)
+                        var client_info = String('{"name":"', init_params.client_name, '","version":"', init_params.client_version, '"}')
+                        effective_session_id = self.session_manager.create_session(connection_id, client_info)
+                        print("Session reassigned to new connection: " + effective_session_id)
+                    else:
+                        self.session_manager.update_session_activity(session_id)
+                        print("Existing session validated: " + session_id)
+                except:
+                    # Invalid session, create new one
+                    var client_info = String('{"name":"', init_params.client_name, '","version":"', init_params.client_version, '"}')
+                    effective_session_id = self.session_manager.create_session(connection_id, client_info)
+                    print("Invalid session replaced: " + effective_session_id)
+            
+            # Validate client capabilities compatibility
+            var negotiated_capabilities = self._negotiate_capabilities(init_params.client_capabilities)
+            
+            # Create new connection
+            var connection = MCPConnection(connection_id)
+            connection.state = INITIALIZING
+            connection.protocol_version = init_params.protocol_version
+            connection.client_name = init_params.client_name
+            connection.client_version = init_params.client_version
+            connection.client_capabilities = init_params.client_capabilities
+            
+            # Store the connection
+            self.connections[connection_id] = connection
+            
+            # Create initialize response with negotiated capabilities and session ID
+            var response = create_initialize_response(
+                request.id, 
+                self.server_info, 
+                negotiated_capabilities
+            )
+            
+            print("Client initialized with session: " + connection.client_name + " v" + connection.client_version + " (Session: " + effective_session_id + ")")
+            return response
+            
+        except e:
+            var error = internal_error()
+            log_error(error, "initialize_with_session_failed")
             return JSONRPCResponse.error_response(request.id, error)
     
     fn _handle_initialized(mut self, notification: JSONRPCNotification) raises:
@@ -351,7 +422,7 @@ struct MCPServer:
         var connection = self.connections[connection_id]
         return self._negotiate_capabilities(connection.client_capabilities)
     
-    fn register_tool(mut self, tool: MCPTool, executor: fn(String) raises -> MCPToolResult) raises:
+    fn register_tool(mut self, tool: MCPTool, executor: ToolExecutionFunc) raises:
         """Register a new tool with the server."""
         self.tools_registry.register_tool(tool, executor)
     
@@ -362,6 +433,22 @@ struct MCPServer:
     fn get_tools_registry(mut self) -> MCPToolRegistry:
         """Get the tools registry for advanced operations."""
         return self.tools_registry
+    
+    fn get_session_manager(mut self) -> SessionManager:
+        """Get the session manager for advanced operations."""
+        return self.session_manager
+    
+    fn get_active_session_count(self) -> Int:
+        """Get the number of active sessions."""
+        return self.session_manager.get_active_session_count()
+    
+    fn cleanup_expired_sessions(mut self) -> Int:
+        """Force cleanup of expired sessions and return the number cleaned."""
+        return self.session_manager.force_cleanup()
+    
+    fn terminate_session(mut self, session_id: String) raises:
+        """Terminate a specific session."""
+        self.session_manager.terminate_session(session_id)
 
 # Helper structure for initialize parameters
 @value

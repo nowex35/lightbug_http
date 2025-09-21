@@ -14,6 +14,7 @@ from lightbug_http.service import HTTPService
 from .parser import JSONRPCParser, JSONRPCSerializer, MessageType
 from .jsonrpc import JSONRPCError, parse_error, invalid_request, method_not_found, internal_error, JSONRPCRequest, JSONRPCResponse, JSONRPCNotification
 from .server import MCPServer
+from .session import extract_session_id_from_header
 
 @value
 struct MCPTransportError(Movable):
@@ -71,7 +72,7 @@ struct HTTPTransport(HTTPService):
         
         try:
             # Process the MCP message
-            var response = self._process_mcp_message(request_body)
+            var response = self._process_mcp_message(request_body, req)
             
             # Create HTTP response with appropriate headers
             _ = self._create_response_headers(req)
@@ -117,10 +118,13 @@ struct HTTPTransport(HTTPService):
         
         return False
     
-    fn _process_mcp_message(mut self, json_body: String) raises -> String:
+    fn _process_mcp_message(mut self, json_body: String, req: HTTPRequest) raises -> String:
         """Process an MCP JSON-RPC message and return the response."""
         var parser = JSONRPCParser()
         var serializer = JSONRPCSerializer()
+        
+        # Extract session ID from headers
+        var session_id = self._extract_session_id(req)
         
         try:
             var message = parser.parse_message(json_body)
@@ -128,11 +132,12 @@ struct HTTPTransport(HTTPService):
             # Handle different message types
             if message.isa[JSONRPCRequest]():
                 var request = message[JSONRPCRequest]
-                var response = self.mcp_handler.handle_request(request)
+                # Pass session ID to handler for session management
+                var response = self.mcp_handler.handle_request_with_session(request, session_id)
                 return serializer.serialize_response(response)
             elif message.isa[JSONRPCNotification]():
                 var notification = message[JSONRPCNotification]
-                self.mcp_handler.handle_notification(notification)
+                self.mcp_handler.handle_notification_with_session(notification, session_id)
                 return ""  # Notifications don't expect responses
             else:
                 # Responses are not expected in server context
@@ -169,6 +174,16 @@ struct HTTPTransport(HTTPService):
         headers["Expires"] = "0"
         
         return headers
+    
+    fn _extract_session_id(self, req: HTTPRequest) raises -> String:
+        """Extract session ID from Mcp-Session-Id header."""
+        if "Mcp-Session-Id" in req.headers:
+            var session_id = String(req.headers["Mcp-Session-Id"].strip())
+            print("Session ID from header: " + session_id)
+            return session_id
+        
+        # No session ID provided
+        return ""
 
 # Forward declaration for the handler interface
 trait MCPHandler:
@@ -180,6 +195,14 @@ trait MCPHandler:
     
     fn handle_notification(mut self, notification: JSONRPCNotification) raises:
         """Handle a JSON-RPC notification (no response expected).""" 
+        pass
+    
+    fn handle_request_with_session(mut self, request: JSONRPCRequest, session_id: String) raises -> JSONRPCResponse:
+        """Handle a JSON-RPC request with session management and return a response."""
+        pass
+    
+    fn handle_notification_with_session(mut self, notification: JSONRPCNotification, session_id: String) raises:
+        """Handle a JSON-RPC notification with session management (no response expected)."""
         pass
 
 # HTTP OPTIONS handler for CORS preflight

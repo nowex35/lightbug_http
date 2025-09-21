@@ -6,6 +6,6 @@ fn main() raises:
     var handler = Welcome()
     
     var host = getenv("DEFAULT_SERVER_HOST", "localhost")
-    var port = getenv("DEFAULT_SERVER_PORT", "8080")
+    var port = getenv("DEFAULT_SERVER_PORT", "8081")
 
     server.listen_and_serve(host + ":" + port, handler)

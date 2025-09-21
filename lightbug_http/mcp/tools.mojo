@@ -67,6 +67,31 @@ struct MCPToolParameter(Movable):
         return json
 
 @value
+struct MCPToolAnnotation(Movable):
+    """Annotation for a tool describing its behavior and constraints."""
+    var audience: List[String]  # Who can use this tool
+    var danger_level: String    # "safe", "warning", "dangerous"
+    var rate_limit: Int         # Requests per minute (0 = no limit)
+    var requires_auth: Bool     # Whether authentication is required
+    var tags: List[String]      # Tags for categorization
+    
+    fn __init__(out self, danger_level: String = "safe", rate_limit: Int = 0, 
+                requires_auth: Bool = False):
+        self.audience = List[String]()
+        self.danger_level = danger_level
+        self.rate_limit = rate_limit
+        self.requires_auth = requires_auth
+        self.tags = List[String]()
+    
+    fn add_audience(mut self, audience: String):
+        """Add an audience member."""
+        self.audience.append(audience)
+    
+    fn add_tag(mut self, tag: String):
+        """Add a tag."""
+        self.tags.append(tag)
+
+@value
 struct MCPTool(Movable):
     """Definition of an MCP tool with its metadata and parameters."""
     var name: String
@@ -76,6 +101,7 @@ struct MCPTool(Movable):
     var category: String  # For organization
     var version: String
     var enabled: Bool
+    var annotations: MCPToolAnnotation  # Tool annotations
     
     fn __init__(out self, name: String, description: String, category: String = "general", 
                 version: String = "1.0.0", enabled: Bool = True):
@@ -86,6 +112,7 @@ struct MCPTool(Movable):
         self.category = category
         self.version = version
         self.enabled = enabled
+        self.annotations = MCPToolAnnotation()
     
     fn add_parameter(mut self, param: MCPToolParameter):
         """Add a parameter to this tool."""
@@ -93,7 +120,7 @@ struct MCPTool(Movable):
         if param.required:
             self.required_params.append(param.name)
     
-    fn to_json(self) -> String:
+    fn to_json(self) raises -> String:
         """Convert tool definition to MCP JSON format."""
         var json = String('{"name":"', self.name, '","description":"', self.description, '"')
         
@@ -118,25 +145,197 @@ struct MCPTool(Movable):
                 json = json + '"' + self.required_params[i] + '"'
             json = json + "]"
         
+        # Add annotations
+        json = json + ',"annotations":{'
+        json = json + '"dangerLevel":"' + self.annotations.danger_level + '"'
+        json = json + ',"rateLimit":' + String(self.annotations.rate_limit)
+        json = json + ',"requiresAuth":' + String(self.annotations.requires_auth)
+        
+        if len(self.annotations.audience) > 0:
+            json = json + ',"audience":['
+            for i in range(len(self.annotations.audience)):
+                if i > 0:
+                    json = json + ","
+                json = json + '"' + self.annotations.audience[i] + '"'
+            json = json + "]"
+        
+        if len(self.annotations.tags) > 0:
+            json = json + ',"tags":['
+            for i in range(len(self.annotations.tags)):
+                if i > 0:
+                    json = json + ","
+                json = json + '"' + self.annotations.tags[i] + '"'
+            json = json + "]"
+        
+        json = json + "}"
         json = json + "}"
         return json
     
-    fn validate_arguments(self, arguments_json: String) -> Bool:
+    fn validate_arguments(self, arguments_json: String) raises -> ValidationResult:
         """Validate provided arguments against the tool's schema."""
-        # TODO: Implement JSON Schema validation
-        # For now, just check if required parameters are present
+        var result = ValidationResult()
         
+        # Parse JSON arguments (simplified parsing)
+        var parsed_args = self._parse_json_arguments(arguments_json)
+        
+        # Check required parameters
         for required_param in self.required_params:
-            if not self._argument_present(arguments_json, required_param):
+            if required_param not in parsed_args:
+                result.add_error("Missing required parameter: " + required_param)
+        
+        # Validate parameter types and constraints
+        for param_name in parsed_args:
+            if param_name in self.input_schema:
+                var param_def = self.input_schema[param_name]
+                var param_value = parsed_args[param_name]
+                
+                var param_validation = self._validate_parameter(param_def, param_value)
+                if not param_validation.is_valid:
+                    result.add_error("Parameter '" + param_name + "': " + param_validation.error_message)
+            else:
+                result.add_warning("Unknown parameter: " + param_name)
+        
+        return result
+    
+    fn _parse_json_arguments(self, arguments_json: String) -> Dict[String, String]:
+        """Parse JSON arguments into a simple key-value map."""
+        var args = Dict[String, String]()
+        
+        # Simplified JSON parsing - extract key-value pairs
+        # This is a basic implementation; in production, use a proper JSON parser
+        var json_str = arguments_json.strip()
+        if json_str.startswith("{") and json_str.endswith("}"):
+            json_str = json_str[1:-1]  # Remove braces
+            
+            var pairs = json_str.split(",")
+            for i in range(len(pairs)):
+                var pair = pairs[i].strip()
+                if ":" in pair:
+                    var parts = pair.split(":", 1)
+                    if len(parts) >= 2:
+                        var key = String(parts[0].strip().strip('"'))
+                        var value = String(parts[1].strip())
+                        args[key] = value
+        
+        return args
+    
+    fn _validate_parameter(self, param_def: MCPToolParameter, value: String) -> ParameterValidationResult:
+        """Validate a single parameter against its definition."""
+        var result = ParameterValidationResult()
+        
+        # Remove quotes from string values
+        var clean_value = String(value.strip().strip('"'))
+        
+        # Type validation
+        if param_def.type == TOOL_TYPE_STRING:
+            # String validation - already clean
+            pass
+        elif param_def.type == TOOL_TYPE_NUMBER:
+            # Number validation
+            if not self._is_number(clean_value):
+                result.is_valid = False
+                result.error_message = "Expected number, got: " + clean_value
+                return result
+        elif param_def.type == TOOL_TYPE_BOOLEAN:
+            # Boolean validation
+            if clean_value != "true" and clean_value != "false":
+                result.is_valid = False
+                result.error_message = "Expected boolean (true/false), got: " + clean_value
+                return result
+        
+        # Enum validation
+        if len(param_def.enum_values) > 0:
+            var valid_enum = False
+            for enum_value in param_def.enum_values:
+                if clean_value == enum_value:
+                    valid_enum = True
+                    break
+            
+            if not valid_enum:
+                result.is_valid = False
+                result.error_message = "Value must be one of: " + self._join_enum_values(param_def.enum_values)
+                return result
+        
+        return result
+    
+    fn _is_number(self, value: String) -> Bool:
+        """Check if a string represents a valid number."""
+        if len(value) == 0:
+            return False
+        
+        var has_dot = False
+        var start_idx = 0
+        
+        # Check for negative sign
+        if len(value) > 0 and String(value[0]) == "-":
+            start_idx = 1
+            if len(value) == 1:
                 return False
+        
+        # Check each character
+        for i in range(start_idx, len(value)):
+            var char = String(value[i])
+            if char == ".":
+                if has_dot:
+                    return False  # Multiple dots
+                has_dot = True
+            elif not (char >= "0" and char <= "9"):
+                return False  # Non-digit character
         
         return True
     
-    fn _argument_present(self, arguments_json: String, param_name: String) -> Bool:
-        """Check if a parameter is present in the arguments JSON."""
-        # Simple check - look for parameter name in JSON
-        var search_pattern = String('"', param_name, '"')
-        return param_name in arguments_json
+    fn _join_enum_values(self, enum_values: List[String]) -> String:
+        """Join enum values into a readable string."""
+        var result = String()
+        for i in range(len(enum_values)):
+            if i > 0:
+                result = result + ", "
+            result = result + enum_values[i]
+        return result
+
+@value
+struct ValidationResult(Movable):
+    """Result of tool argument validation."""
+    var is_valid: Bool
+    var errors: List[String]
+    var warnings: List[String]
+    
+    fn __init__(out self):
+        self.is_valid = True
+        self.errors = List[String]()
+        self.warnings = List[String]()
+    
+    fn add_error(mut self, message: String):
+        """Add a validation error."""
+        self.errors.append(message)
+        self.is_valid = False
+    
+    fn add_warning(mut self, message: String):
+        """Add a validation warning."""
+        self.warnings.append(message)
+    
+    fn get_error_summary(self) -> String:
+        """Get a summary of all errors."""
+        if len(self.errors) == 0:
+            return ""
+        
+        var summary = String("Validation errors: ")
+        for i in range(len(self.errors)):
+            if i > 0:
+                summary = summary + "; "
+            summary = summary + self.errors[i]
+        
+        return summary
+
+@value
+struct ParameterValidationResult(Movable):
+    """Result of single parameter validation."""
+    var is_valid: Bool
+    var error_message: String
+    
+    fn __init__(out self):
+        self.is_valid = True
+        self.error_message = ""
 
 @value
 struct MCPToolContent(Movable):
@@ -155,15 +354,15 @@ struct MCPToolContent(Movable):
         var json = String('{"type":"', self.type, '"')
         
         if self.type == "text":
-            json = json + ',"text":"', self.data, '"'
+            json = json + ',"text":"' + self.data + '"'
         elif self.type == "image":
-            json = json + ',"data":"', self.data, '"'
+            json = json + ',"data":"' + self.data + '"'
             if self.mime_type != "":
-                json = json + ',"mimeType":"', self.mime_type, '"'
+                json = json + ',"mimeType":"' + self.mime_type + '"'
         elif self.type == "resource":
-            json = json + ',"resource":"', self.data, '"'
+            json = json + ',"resource":"' + self.data + '"'
             if self.mime_type != "":
-                json = json + ',"mimeType":"', self.mime_type, '"'
+                json = json + ',"mimeType":"' + self.mime_type + '"'
         
         json = json + "}"
         return json
@@ -201,36 +400,6 @@ struct MCPToolResult(Movable):
                 json = json + ","
             json = json + self.content[i].to_json()
         json = json + "]}"
-        return json
-
-@value
-struct MCPToolContent(Movable):
-    """Content item in a tool result."""
-    var type: String  # "text", "image", "resource"
-    var data: String  # Text content, base64 data, or URI
-    var mime_type: String  # MIME type for resources
-    
-    fn __init__(out self, type: String, data: String, mime_type: String = ""):
-        self.type = type
-        self.data = data
-        self.mime_type = mime_type
-    
-    fn to_json(self) -> String:
-        """Convert content to JSON format."""
-        var json = String('{"type":"', self.type, '"')
-        
-        if self.type == "text":
-            json = json + ',"text":"', self.data, '"'
-        elif self.type == "image":
-            json = json + ',"data":"', self.data, '"'
-            if self.mime_type != "":
-                json = json + ',"mimeType":"', self.mime_type, '"'
-        elif self.type == "resource":
-            json = json + ',"resource":"', self.data, '"'
-            if self.mime_type != "":
-                json = json + ',"mimeType":"', self.mime_type, '"'
-        
-        json = json + "}"
         return json
 
 # Tool execution function type
@@ -285,9 +454,12 @@ struct MCPToolRegistry(Movable):
         """Get list of all registered tools."""
         var tool_list = List[MCPTool]()
         for tool_name in self.tools:
-            var tool = self.tools[tool_name]
-            if tool.enabled:
-                tool_list.append(tool)
+            try:
+                var tool = self.tools[tool_name]
+                if tool.enabled:
+                    tool_list.append(tool)
+            except:
+                continue
         return tool_list
     
     fn execute_tool(mut self, tool_name: String, arguments_json: String) raises -> MCPToolResult:
@@ -313,9 +485,12 @@ struct MCPToolRegistry(Movable):
         
         # Validate arguments
         try:
-            _ = tool.validate_arguments(arguments_json)
+            var validation = tool.validate_arguments(arguments_json)
+            if not validation.is_valid:
+                var error_result = MCPToolResult(True, validation.get_error_summary())
+                return error_result
         except e:
-            var error_result = MCPToolResult(True, "Invalid arguments")
+            var error_result = MCPToolResult(True, "Argument validation failed")
             return error_result
         
         # Execute the tool with safety monitoring
@@ -367,34 +542,46 @@ struct MCPToolRegistry(Movable):
         if tool_name not in self.tools:
             raise Error("Tool not found: " + tool_name)
         
-        var tool = self.tools[tool_name]
-        tool.enabled = True
-        self.tools[tool_name] = tool
+        try:
+            var tool = self.tools[tool_name]
+            tool.enabled = True
+            self.tools[tool_name] = tool
+        except:
+            raise Error("Failed to enable tool: " + tool_name)
     
     fn disable_tool(mut self, tool_name: String) raises:
         """Disable a specific tool."""
         if tool_name not in self.tools:
             raise Error("Tool not found: " + tool_name)
         
-        var tool = self.tools[tool_name]
-        tool.enabled = False
-        self.tools[tool_name] = tool
+        try:
+            var tool = self.tools[tool_name]
+            tool.enabled = False
+            self.tools[tool_name] = tool
+        except:
+            raise Error("Failed to disable tool: " + tool_name)
     
     fn enable_all_tools(mut self):
         """Enable all tools."""
         self.enabled = True
         for tool_name in self.tools:
-            var tool = self.tools[tool_name]
-            tool.enabled = True
-            self.tools[tool_name] = tool
+            try:
+                var tool = self.tools[tool_name]
+                tool.enabled = True
+                self.tools[tool_name] = tool
+            except:
+                print("Failed to enable tool: " + tool_name)
     
     fn disable_all_tools(mut self):
         """Disable all tools."""
         self.enabled = False
         for tool_name in self.tools:
-            var tool = self.tools[tool_name]
-            tool.enabled = False
-            self.tools[tool_name] = tool
+            try:
+                var tool = self.tools[tool_name]
+                tool.enabled = False
+                self.tools[tool_name] = tool
+            except:
+                print("Failed to disable tool: " + tool_name)
     
     fn get_tool_count(self) -> Int:
         """Get the number of registered tools."""
@@ -404,9 +591,12 @@ struct MCPToolRegistry(Movable):
         """Get the number of enabled tools."""
         var count = 0
         for tool_name in self.tools:
-            var tool = self.tools[tool_name]
-            if tool.enabled:
-                count += 1
+            try:
+                var tool = self.tools[tool_name]
+                if tool.enabled:
+                    count += 1
+            except:
+                continue
         return count
 
 # Utility functions for creating common tool parameter types
