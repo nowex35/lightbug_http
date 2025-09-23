@@ -219,8 +219,13 @@ fn create_error(code: Int, message: String) -> JSONRPCError:
     return JSONRPCError(code, message)
 
 fn log_error(error: JSONRPCError, context: String = ""):
-    """Log an error for debugging."""
+    """Log an error for debugging to stderr (MCP-compliant)."""
     var log_message = "JSON-RPC Error: " + error.message
     if context != "":
         log_message = log_message + " (Context: " + context + ")"
-    print(log_message)
+    try:
+        var python = Python.import_module("sys")
+        python.stderr.write("[MCP-JSONRPC] " + log_message + "\n")
+        python.stderr.flush()
+    except:
+        pass

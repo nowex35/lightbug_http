@@ -403,7 +403,6 @@ struct MCPToolRegistry(Movable):
         
         self.tools[tool.name] = tool
         self.tool_executors[tool.name] = executor
-        print("Tool registered: " + tool.name)
     
     fn unregister_tool(mut self, tool_name: String) raises:
         """Unregister a tool."""

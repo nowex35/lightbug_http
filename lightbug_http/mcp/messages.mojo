@@ -58,19 +58,19 @@ struct MCPCapabilities(Movable):
     fn to_json(self) -> String:
         var json = String("{")
         var first = True
-        
+
         if self.tools:
-            json = json + '"tools":{}'
+            json = json + '"tools":{"listChanged":false}'
             first = False
         if self.resources:
             if not first:
                 json = json + ","
-            json = json + '"resources":{}'
+            json = json + '"resources":{"listChanged":false}'
             first = False
         if self.prompts:
             if not first:
                 json = json + ","
-            json = json + '"prompts":{}'
+            json = json + '"prompts":{"listChanged":false}'
             first = False
         if self.logging:
             if not first:
@@ -80,13 +80,13 @@ struct MCPCapabilities(Movable):
         if self.roots:
             if not first:
                 json = json + ","
-            json = json + '"roots":{}'
+            json = json + '"roots":{"listChanged":false}'
             first = False
         if self.sampling:
             if not first:
                 json = json + ","
             json = json + '"sampling":{}'
-        
+
         json = json + "}"
         return json
 

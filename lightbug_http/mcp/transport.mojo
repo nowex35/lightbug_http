@@ -15,6 +15,22 @@ from .parser import JSONRPCParser, JSONRPCSerializer, MessageType
 from .jsonrpc import JSONRPCError, parse_error, invalid_request, method_not_found, internal_error, JSONRPCRequest, JSONRPCResponse, JSONRPCNotification
 from .server import MCPServer
 
+# Forward declaration for the handler interface
+trait MCPTransport:
+    """Common interface for all MCP transport implementations."""
+
+    fn start(mut self) raises:
+        """Start the transport layer."""
+        pass
+
+    fn stop(mut self):
+        """Stop the transport layer."""
+        pass
+
+    fn is_running(self) -> Bool:
+        """Check if the transport is currently running."""
+        pass
+
 @value
 struct MCPTransportError(Movable):
     """Transport-level error for MCP."""
@@ -72,9 +88,7 @@ struct HTTPTransport(HTTPService):
         try:
             # Process the MCP message
             var response = self._process_mcp_message(request_body, req)
-            
-            print("DEBUG: Sending HTTP response with body: " + response)
-            
+
             # Create HTTP response with appropriate headers
             _ = self._create_response_headers(req)
             return OK(bytes(response), content_type="application/json")
@@ -91,7 +105,6 @@ struct HTTPTransport(HTTPService):
             var content_type = req.headers[HeaderKey.CONTENT_TYPE]
             var is_valid = content_type.startswith("application/json")
             return is_valid
-        print("No Content-Type header found")
         return False
     
     fn _validate_origin(self, req: HTTPRequest) raises -> Bool:
@@ -103,7 +116,6 @@ struct HTTPTransport(HTTPService):
             return False
         
         var origin = req.headers["Origin"]
-        print("Origin header received: '" + origin + "'")
         
         # If no specific origins are configured, allow localhost only
         if len(self.allowed_origins) == 0:
@@ -127,35 +139,27 @@ struct HTTPTransport(HTTPService):
         # Extract session ID from headers
         var session_id = self._extract_session_id(req)
         
-        print("DEBUG: Processing MCP message: " + json_body)
-        
         try:
             var message = parser.parse_message(json_body)
-            print("DEBUG: Message parsed successfully")
             
             # Handle different message types
             if message.isa[JSONRPCRequest]():
                 var request = message[JSONRPCRequest]
-                print("DEBUG: Processing request: " + request.method)
                 # Pass session ID to handler for session management
                 var response = self.mcp_handler.handle_request_with_session(request, session_id)
                 var serialized_response = serializer.serialize_response(response)
-                print("DEBUG: Final serialized response: " + serialized_response)
                 return serialized_response
             elif message.isa[JSONRPCNotification]():
                 var notification = message[JSONRPCNotification]
-                print("DEBUG: Processing notification: " + notification.method)
                 self.mcp_handler.handle_notification_with_session(notification, session_id)
                 return ""  # Notifications don't expect responses
             else:
                 # Responses are not expected in server context
-                print("DEBUG: Unexpected message type - treating as invalid request")
                 var error_response = self._create_error_response("", invalid_request())
                 return error_response
                 
         except e:
             # Return parse error for invalid JSON-RPC
-            print("DEBUG: JSON-RPC parse error: " + String(e))
             var error_response = self._create_error_response("", parse_error())
             return error_response
     
@@ -189,7 +193,6 @@ struct HTTPTransport(HTTPService):
         """Extract session ID from Mcp-Session-Id header."""
         if "Mcp-Session-Id" in req.headers:
             var session_id = String(req.headers["Mcp-Session-Id"].strip())
-            print("Session ID from header: " + session_id)
             return session_id
         
         # No session ID provided

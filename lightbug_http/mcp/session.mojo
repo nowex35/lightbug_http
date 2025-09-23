@@ -73,7 +73,6 @@ struct SessionManager(Movable):
         self.sessions[session_id] = session
         self.connection_to_session[connection_id] = session_id
         
-        print("Session created: " + session_id + " for connection: " + connection_id)
         return session_id
     
     fn get_session(self, session_id: String) raises -> MCPSession:

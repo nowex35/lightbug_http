@@ -98,7 +98,6 @@ struct MCPServer(MCPHandler):
             raise Error("Server is already running")
         
         self.is_running = True
-        print("MCP Server started: " + self.server_info.name + " v" + self.server_info.version)
     
     fn stop(mut self) raises:
         """Stop the MCP server and close all connections."""
@@ -114,11 +113,9 @@ struct MCPServer(MCPHandler):
             self._close_connection(connection_ids[i])
         
         self.is_running = False
-        print("MCP Server stopped")
     
     fn handle_request(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
         """Handle incoming JSON-RPC requests."""
-        print("DEBUG: handle_request called with method: " + request.method)
         
         if not self.is_running:
             var error = server_not_initialized()
@@ -127,22 +124,16 @@ struct MCPServer(MCPHandler):
         
         # Route request based on method
         if request.method == "initialize":
-            print("DEBUG: Routing to _handle_initialize")
             return self._handle_initialize(request)
         elif request.method.startswith("tools/"):
-            print("DEBUG: Routing to _handle_tools_request")
             return self._handle_tools_request(request)
         elif request.method.startswith("resources/templates/"):
-            print("DEBUG: Routing to _handle_templates_request")
             return self._handle_templates_request(request)
         elif request.method.startswith("resources/"):
-            print("DEBUG: Routing to _handle_resources_request")
             return self._handle_resources_request(request)
         elif request.method.startswith("prompts/"):
-            print("DEBUG: Routing to _handle_prompts_request")
             return self._handle_prompts_request(request)
         else:
-            print("DEBUG: Unknown method, returning method_not_found")
             var error = method_not_found()
             return JSONRPCResponse.error_response(request.id, error)
     
@@ -214,7 +205,7 @@ struct MCPServer(MCPHandler):
                 return JSONRPCResponse.error_response(request.id, error)
             
             # Validate client capabilities compatibility
-            var negotiated_capabilities = self._negotiate_capabilities(init_params.client_capabilities)
+            var _ = self._negotiate_capabilities(init_params.client_capabilities)
             
             # Create new connection
             var connection = MCPConnection(connection_id)
@@ -227,17 +218,12 @@ struct MCPServer(MCPHandler):
             # Store the connection
             self.connections[connection_id] = connection
             
-            # Create initialize response with negotiated capabilities
+            # Create initialize response with server capabilities
             var response = create_initialize_response(
-                request.id, 
-                self.server_info, 
-                negotiated_capabilities
+                request.id,
+                self.server_info,
+                self.server_capabilities
             )
-            
-            print("Client initialized: " + connection.client_name + " v" + connection.client_version)
-            print("Negotiated capabilities - Tools: " + String(negotiated_capabilities.tools) + 
-                  ", Resources: " + String(negotiated_capabilities.resources) + 
-                  ", Prompts: " + String(negotiated_capabilities.prompts))
             return response
             
         except e:
@@ -261,12 +247,11 @@ struct MCPServer(MCPHandler):
                 return JSONRPCResponse.error_response(request.id, error)
             
             # Create or manage session
-            var effective_session_id = session_id
+            var _ = session_id
             if session_id == "":
                 # No session ID provided, create a new session
                 var client_info = String('{"name":"', init_params.client_name, '","version":"', init_params.client_version, '"}')
-                effective_session_id = self.session_manager.create_session(connection_id, client_info)
-                print("New session created: " + effective_session_id)
+                var _ = self.session_manager.create_session(connection_id, client_info)
             else:
                 # Session ID provided, validate and update
                 try:
@@ -275,19 +260,16 @@ struct MCPServer(MCPHandler):
                         # Associate session with new connection
                         self.session_manager.terminate_session_by_connection(session.connection_id)
                         var client_info = String('{"name":"', init_params.client_name, '","version":"', init_params.client_version, '"}')
-                        effective_session_id = self.session_manager.create_session(connection_id, client_info)
-                        print("Session reassigned to new connection: " + effective_session_id)
+                        var _ = self.session_manager.create_session(connection_id, client_info)
                     else:
                         self.session_manager.update_session_activity(session_id)
-                        print("Existing session validated: " + session_id)
                 except:
                     # Invalid session, create new one
                     var client_info = String('{"name":"', init_params.client_name, '","version":"', init_params.client_version, '"}')
-                    effective_session_id = self.session_manager.create_session(connection_id, client_info)
-                    print("Invalid session replaced: " + effective_session_id)
+                    var _ = self.session_manager.create_session(connection_id, client_info)
             
             # Validate client capabilities compatibility
-            var negotiated_capabilities = self._negotiate_capabilities(init_params.client_capabilities)
+            var _ = self._negotiate_capabilities(init_params.client_capabilities)
             
             # Create new connection
             var connection = MCPConnection(connection_id)
@@ -300,14 +282,13 @@ struct MCPServer(MCPHandler):
             # Store the connection
             self.connections[connection_id] = connection
             
-            # Create initialize response with negotiated capabilities and session ID
+            # Create initialize response with server capabilities and session ID
             var response = create_initialize_response(
-                request.id, 
-                self.server_info, 
-                negotiated_capabilities
+                request.id,
+                self.server_info,
+                self.server_capabilities
             )
             
-            print("Client initialized with session: " + connection.client_name + " v" + connection.client_version + " (Session: " + effective_session_id + ")")
             return response
             
         except e:
@@ -323,15 +304,12 @@ struct MCPServer(MCPHandler):
             if connection.state == INITIALIZING:
                 connection.state = READY
                 self.connections[connection_id] = connection
-                print("Client ready: " + connection.client_name)
     
     fn _handle_tools_request(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
         """Handle tools/* requests."""
-        print("DEBUG: Handling tools request: " + request.method)
         
         if request.method == "tools/list":
             var tools = self.tools_registry.list_tools()
-            print("DEBUG: tools/list request - Found " + String(len(tools)) + " tools in registry")
             
             # Build tools array
             var tools_array = String("[")
@@ -344,18 +322,14 @@ struct MCPServer(MCPHandler):
                         tools_array = tools_array + ","
                     tools_array = tools_array + tool_json
                     added_count += 1
-                    print("DEBUG: Successfully serialized tool " + String(i) + ": " + tools[i].name)
                 except e:
-                    print("DEBUG: Failed to serialize tool " + tools[i].name + ": " + String(e))
                     continue
             
             tools_array = tools_array + "]"
             
             # Create proper MCP response format with result object
             var result_json = String('{"tools":' + tools_array + '}')
-            print("DEBUG: Final result JSON (length=" + String(len(result_json)) + "): " + result_json)
             var response = JSONRPCResponse.success(request.id, result_json)
-            print("DEBUG: JSONRPCResponse created with id: " + response.id)
             return response
         elif request.method == "tools/call":
             try:
@@ -394,7 +368,6 @@ struct MCPServer(MCPHandler):
     
     fn _parse_initialize_params(self, params_json: String) raises -> InitializeParams:
         """Parse initialize request parameters."""
-        print("DEBUG: Parsing initialize params: " + params_json)
         
         var params = InitializeParams()
         
@@ -460,16 +433,11 @@ struct MCPServer(MCPHandler):
                         if version_quote_end != -1:
                             params.client_version = params_json[version_quote_start + 1:version_quote_end]
         
-        print("DEBUG: Parsed - protocol: " + params.protocol_version + 
-              ", client: " + params.client_name + " v" + params.client_version)
-        
         return params
     
     fn _close_connection(mut self, connection_id: String) raises:
         """Close a client connection."""
         if connection_id in self.connections:
-            var connection = self.connections[connection_id]
-            print("Closing connection: " + connection.client_name)
             _ = self.connections.pop(connection_id)
     
     fn get_connection_count(self) -> Int:
@@ -514,10 +482,8 @@ struct MCPServer(MCPHandler):
     
     fn register_tool(mut self, tool: MCPTool, executor: ToolExecutionFunc) raises:
         """Register a new tool with the server."""
-        print("DEBUG: MCPServer.register_tool called for: " + tool.name)
         self.tools_registry.register_tool(tool, executor)
-        var registered_tools = self.tools_registry.list_tools()
-        print("DEBUG: Total tools in registry after registration: " + String(len(registered_tools)))
+        var _ = self.tools_registry.list_tools()
     
     fn unregister_tool(mut self, tool_name: String) raises:
         """Unregister a tool from the server."""
@@ -641,7 +607,6 @@ struct ToolsHandler(RequestHandler):
     fn _handle_tools_list(self, request: JSONRPCRequest) raises -> JSONRPCResponse:
         """Handle tools/list request."""
         var tools = self.tools_registry.list_tools()
-        print("DEBUG: ToolsHandler tools/list - Found " + String(len(tools)) + " tools in registry")
         
         # Build tools array
         var tools_array = String("[")
@@ -654,16 +619,13 @@ struct ToolsHandler(RequestHandler):
                     tools_array = tools_array + ","
                 tools_array = tools_array + tool_json
                 added_count += 1
-                print("DEBUG: ToolsHandler serialized tool " + String(i) + ": " + tools[i].name)
             except e:
-                print("DEBUG: ToolsHandler failed to serialize tool " + tools[i].name + ": " + String(e))
                 continue
         
         tools_array = tools_array + "]"
         
         # Create proper MCP response format with result object
         var result_json = String('{"tools":' + tools_array + '}')
-        print("DEBUG: ToolsHandler final result JSON (length=" + String(len(result_json)) + "): " + result_json)
         return JSONRPCResponse.success(request.id, result_json)
     
     fn _handle_tools_call(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
@@ -686,9 +648,7 @@ struct ToolsHandler(RequestHandler):
     fn _parse_tool_call_params(self, params_json: String) raises -> ToolCallParams:
         """Parse tool call parameters from JSON."""
         # Expected format: {"name": "tool_name", "arguments": {...}}
-        
-        print("DEBUG: Parsing tool call params: " + params_json)
-        
+                
         # Simple JSON parsing for tool call parameters
         var name = String("unknown")
         var arguments = String("{}")
@@ -712,7 +672,7 @@ struct ToolsHandler(RequestHandler):
                     var name_quote_end = params_json.find(quote_char, name_quote_start + 1)
                     if name_quote_end != -1:
                         name = params_json[name_quote_start + 1:name_quote_end]
-                        print("DEBUG: Extracted tool name: " + name)
+                        
         
         # Extract arguments object - handle both single and double quotes
         var args_start = params_json.find("'arguments'")
@@ -744,9 +704,7 @@ struct ToolsHandler(RequestHandler):
                         arguments = params_json[args_brace_start:args_end]
                         # Convert single quotes to double quotes for valid JSON
                         arguments = arguments.replace("'", '"')
-                        print("DEBUG: Extracted arguments: " + arguments)
         
-        print("DEBUG: Final parsed - name: " + name + ", arguments: " + arguments)
         return ToolCallParams(name, arguments)
 
 @value
