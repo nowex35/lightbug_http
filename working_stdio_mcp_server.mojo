@@ -5,7 +5,7 @@ as specified in the MCP protocol for command-line integration.
 """
 
 from lightbug_http.mcp import MCPServer
-from lightbug_http.mcp.tools import MCPTool, MCPToolResult, MCPToolParameter, MCPToolAnnotation, create_string_parameter
+from lightbug_http.mcp.tools import MCPTool, MCPToolResult, MCPToolParameter, create_string_parameter
 from lightbug_http.mcp.stdio_server import create_stdio_mcp_server_runner
 
 fn example_echo_tool(arguments_json: String) raises -> MCPToolResult:
@@ -31,10 +31,6 @@ fn main() raises:
     var echo_tool = MCPTool("echo", "Echoes back the provided message", "demo")
     var message_param = create_string_parameter("message", "The message to echo", True)
     echo_tool.add_parameter(message_param)
-    var echo_annotation = MCPToolAnnotation("safe", 0, False)
-    echo_annotation.add_tag("demo")
-    echo_annotation.add_tag("text")
-    echo_tool.annotations = echo_annotation
 
     try:
         mcp_server.register_tool(echo_tool, example_echo_tool)

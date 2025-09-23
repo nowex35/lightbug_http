@@ -37,48 +37,23 @@ struct MCPToolParameter(Movable):
     
     fn to_json(self) -> String:
         """Convert parameter to JSON Schema format."""
-        var json = String('{"type":"', self.type, '","description":"', self.description, '"')
-        
+        var json = String('{"type":"', escape_json_string(self.type), '","description":"', escape_json_string(self.description), '"')
+
         # Add enum values if present
         if len(self.enum_values) > 0:
             json = json + ',"enum":['
             for i in range(len(self.enum_values)):
                 if i > 0:
                     json = json + ","
-                json = json + '"' + self.enum_values[i] + '"'
+                json = json + '"' + escape_json_string(self.enum_values[i]) + '"'
             json = json + "]"
-        
-        # Add default value if present
+
+        # Add default value if present (Note: default_value should already be valid JSON)
         if self.default_value != "":
             json = json + ',"default":' + self.default_value
-        
+
         json = json + "}"
         return json
-
-@value
-struct MCPToolAnnotation(Movable):
-    """Annotation for a tool describing its behavior and constraints."""
-    var audience: List[String]  # Who can use this tool
-    var danger_level: String    # "safe", "warning", "dangerous"
-    var rate_limit: Int         # Requests per minute (0 = no limit)
-    var requires_auth: Bool     # Whether authentication is required
-    var tags: List[String]      # Tags for categorization
-    
-    fn __init__(out self, danger_level: String = "safe", rate_limit: Int = 0, 
-                requires_auth: Bool = False):
-        self.audience = List[String]()
-        self.danger_level = danger_level
-        self.rate_limit = rate_limit
-        self.requires_auth = requires_auth
-        self.tags = List[String]()
-    
-    fn add_audience(mut self, audience: String):
-        """Add an audience member."""
-        self.audience.append(audience)
-    
-    fn add_tag(mut self, tag: String):
-        """Add a tag."""
-        self.tags.append(tag)
 
 @value
 struct MCPTool(Movable):
@@ -87,21 +62,33 @@ struct MCPTool(Movable):
     var description: String
     var input_schema: Dict[String, MCPToolParameter]
     var required_params: List[String]
-    var category: String  # For organization
     var version: String
     var enabled: Bool
-    var annotations: MCPToolAnnotation  # Tool annotations
     
-    fn __init__(out self, name: String, description: String, category: String = "general", 
+    fn __init__(out self, name: String, description: String,
+                parameters: MCPToolParameter,
                 version: String = "1.0.0", enabled: Bool = True):
         self.name = name
         self.description = description
         self.input_schema = Dict[String, MCPToolParameter]()
         self.required_params = List[String]()
-        self.category = category
         self.version = version
         self.enabled = enabled
-        self.annotations = MCPToolAnnotation()
+
+        self.add_parameter(parameters)
+
+    fn __init__(out self, name: String, description: String,
+                parameters: List[MCPToolParameter],
+                version: String = "1.0.0", enabled: Bool = True):
+        self.name = name
+        self.description = description
+        self.input_schema = Dict[String, MCPToolParameter]()
+        self.required_params = List[String]()
+        self.version = version
+        self.enabled = enabled
+
+        for param in parameters:
+            self.add_parameter(param)
     
     fn add_parameter(mut self, param: MCPToolParameter):
         """Add a parameter to this tool."""
@@ -111,8 +98,8 @@ struct MCPTool(Movable):
     
     fn to_json(self) raises -> String:
         """Convert tool definition to MCP JSON format."""
-        var json = String('{"name":"', self.name, '","description":"', self.description, '"')
-        
+        var json = String('{"name":"', escape_json_string(self.name), '","description":"', escape_json_string(self.description), '"')
+
         # Add input schema with required parameters inside
         json = json + ',"inputSchema":{"type":"object","properties":{'
         var first = True
@@ -120,25 +107,24 @@ struct MCPTool(Movable):
             if not first:
                 json = json + ","
             var param = self.input_schema[param_name]
-            json = json + '"' + param_name + '":' + param.to_json()
+            json = json + '"' + escape_json_string(param_name) + '":' + param.to_json()
             first = False
-        
+
         json = json + "}"
-        
+
         # Add required parameters inside inputSchema
         if len(self.required_params) > 0:
             json = json + ',"required":['
             for i in range(len(self.required_params)):
                 if i > 0:
                     json = json + ","
-                json = json + '"' + self.required_params[i] + '"'
+                json = json + '"' + escape_json_string(self.required_params[i]) + '"'
             json = json + "]"
-        
+
         json = json + "}"
-        
-        # Note: Annotations are optional and may not be supported by all MCP clients
+
         # For maximum compatibility, we'll omit them for now
-        
+
         json = json + "}"
         return json
     
@@ -322,19 +308,19 @@ struct MCPToolContent(Movable):
     
     fn to_json(self) -> String:
         """Convert content to JSON format."""
-        var json = String('{"type":"', self.type, '"')
-        
+        var json = String('{"type":"', escape_json_string(self.type), '"')
+
         if self.type == "text":
-            json = json + ',"text":"' + self.data + '"'
+            json = json + ',"text":"' + escape_json_string(self.data) + '"'
         elif self.type == "image":
-            json = json + ',"data":"' + self.data + '"'
+            json = json + ',"data":"' + escape_json_string(self.data) + '"'
             if self.mime_type != "":
-                json = json + ',"mimeType":"' + self.mime_type + '"'
+                json = json + ',"mimeType":"' + escape_json_string(self.mime_type) + '"'
         elif self.type == "resource":
-            json = json + ',"resource":"' + self.data + '"'
+            json = json + ',"resource":"' + escape_json_string(self.data) + '"'
             if self.mime_type != "":
-                json = json + ',"mimeType":"' + self.mime_type + '"'
-        
+                json = json + ',"mimeType":"' + escape_json_string(self.mime_type) + '"'
+
         json = json + "}"
         return json
 
@@ -355,16 +341,11 @@ struct MCPToolResult(Movable):
         var content = MCPToolContent("text", text)
         self.content.append(content)
     
-    fn add_resource_content(mut self, uri: String, mime_type: String = ""):
-        """Add resource reference content to the result."""
-        var content = MCPToolContent("resource", uri, mime_type)
-        self.content.append(content)
-    
     fn to_json(self) -> String:
         """Convert result to MCP JSON format."""
         if self.is_error:
-            return String('{"isError":true,"content":[{"type":"text","text":"', self.error_message, '"}]}')
-        
+            return String('{"isError":true,"content":[{"type":"text","text":"', escape_json_string(self.error_message), '"}]}')
+
         var json = String('{"content":[')
         for i in range(len(self.content)):
             if i > 0:
@@ -403,22 +384,6 @@ struct MCPToolRegistry(Movable):
         
         self.tools[tool.name] = tool
         self.tool_executors[tool.name] = executor
-    
-    fn unregister_tool(mut self, tool_name: String) raises:
-        """Unregister a tool."""
-        if tool_name not in self.tools:
-            raise Error("Tool not found: " + tool_name)
-        
-        _ = self.tools.pop(tool_name)
-        _ = self.tool_executors.pop(tool_name)
-        print("Tool unregistered: " + tool_name)
-    
-    fn get_tool(self, tool_name: String) raises -> MCPTool:
-        """Get a tool definition by name."""
-        if tool_name not in self.tools:
-            raise Error("Tool not found: " + tool_name)
-        
-        return self.tools[tool_name]
     
     fn list_tools(self) -> List[MCPTool]:
         """Get list of all registered tools."""
@@ -481,60 +446,37 @@ struct MCPToolRegistry(Movable):
         # Current implementation: Direct execution without timeout
         # Requires async I/O system for proper timeout handling
         return executor(arguments_json)
-    
-    fn configure_safety(mut self, max_execution_time_ms: Int, max_concurrent_executions: Int):
-        """Configure safety parameters."""
-        self.max_execution_time_ms = max_execution_time_ms
-        self.max_concurrent_executions = max_concurrent_executions
-        print("Safety configuration updated: timeout=" + String(max_execution_time_ms) + 
-              "ms, max_concurrent=" + String(max_concurrent_executions))
-    
-    fn enable_safety_checks(mut self):
-        """Enable safety checks."""
-        self.safety_checks_enabled = True
-        print("Safety checks enabled")
-    
-    fn disable_safety_checks(mut self):
-        """Disable safety checks (use with caution).""" 
-        self.safety_checks_enabled = False
-        print("Safety checks disabled - use with caution!")
-    
-    fn get_execution_stats(self) -> ExecutionStats:
-        """Get current execution statistics."""
-        return ExecutionStats(
-            self.current_executions,
-            self.max_concurrent_executions,
-            self.max_execution_time_ms,
-            self.safety_checks_enabled
-        )
-    
-    fn enable_tool(mut self, tool_name: String) raises:
-        """Enable a specific tool."""
-        if tool_name not in self.tools:
-            raise Error("Tool not found: " + tool_name)
-        
-        try:
-            var tool = self.tools[tool_name]
-            tool.enabled = True
-            self.tools[tool_name] = tool
-        except:
-            raise Error("Failed to enable tool: " + tool_name)
-    
-    fn disable_tool(mut self, tool_name: String) raises:
-        """Disable a specific tool."""
-        if tool_name not in self.tools:
-            raise Error("Tool not found: " + tool_name)
-        
-        try:
-            var tool = self.tools[tool_name]
-            tool.enabled = False
-            self.tools[tool_name] = tool
-        except:
-            raise Error("Failed to disable tool: " + tool_name)
+
+# JSON utility functions
+fn escape_json_string(value: String) -> String:
+    """Escape special characters in a string for JSON format."""
+    var escaped = String()
+    for i in range(len(value)):
+        var char = String(value[i])
+        if char == '"':
+            escaped = escaped + '\\"'
+        elif char == '\\':
+            escaped = escaped + '\\\\'
+        elif char == '\n':
+            escaped = escaped + '\\n'
+        elif char == '\r':
+            escaped = escaped + '\\r'
+        elif char == '\t':
+            escaped = escaped + '\\t'
+        elif ord(char) < 32:
+            # Control characters - convert to unicode escape
+            var char_code = ord(char)
+            escaped = escaped + '\\u00'
+            if char_code < 16:
+                escaped = escaped + '0'
+            escaped = escaped + String(hex(char_code))
+        else:
+            escaped = escaped + char
+    return escaped
 
 # Utility functions for creating common tool parameter types
 
-fn create_string_parameter(name: String, description: String, required: Bool = True, 
+fn create_string_parameter(name: String, description: String, required: Bool = True,
                           default_value: String = "") -> MCPToolParameter:
     """Create a string parameter."""
     return MCPToolParameter(name, TOOL_TYPE_STRING, description, required, default_value)
@@ -553,31 +495,3 @@ fn create_enum_parameter(name: String, description: String, enum_values: List[St
                         required: Bool = True, default_value: String = "") -> MCPToolParameter:
     """Create an enum parameter."""
     return MCPToolParameter(name, TOOL_TYPE_STRING, description, required, default_value, enum_values)
-
-@value
-struct ExecutionStats(Movable):
-    """Statistics about tool execution."""
-    var current_executions: Int
-    var max_concurrent_executions: Int
-    var max_execution_time_ms: Int
-    var safety_checks_enabled: Bool
-    
-    fn __init__(out self, current_executions: Int, max_concurrent_executions: Int,
-                max_execution_time_ms: Int, safety_checks_enabled: Bool):
-        self.current_executions = current_executions
-        self.max_concurrent_executions = max_concurrent_executions
-        self.max_execution_time_ms = max_execution_time_ms
-        self.safety_checks_enabled = safety_checks_enabled
-    
-    fn to_json(self) -> String:
-        """Convert statistics to JSON format."""
-        return String('{"currentExecutions":', String(self.current_executions),
-                     ',"maxConcurrentExecutions":', String(self.max_concurrent_executions),
-                     ',"maxExecutionTimeMs":', String(self.max_execution_time_ms),
-                     ',"safetyChecksEnabled":', String(self.safety_checks_enabled), '}')
-    
-    fn utilization_percent(self) -> Float64:
-        """Get current utilization as percentage."""
-        if self.max_concurrent_executions == 0:
-            return 0.0
-        return Float64(self.current_executions) / Float64(self.max_concurrent_executions) * 100.0

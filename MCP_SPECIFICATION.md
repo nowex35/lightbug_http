@@ -186,13 +186,6 @@ MCP は JSON-RPC 2.0 仕様に厳密に準拠し、3つの主要メッセージ�
   "inputSchema": {
     "type": "object",
     "properties": { ... }
-  },
-  "annotations": {
-    "title": "string (オプション)",
-    "readOnlyHint": "boolean (オプション)",
-    "destructiveHint": "boolean (オプション)",
-    "idempotentHint": "boolean (オプション)",
-    "openWorldHint": "boolean (オプション)"
   }
 }
 ```

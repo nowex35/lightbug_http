@@ -152,17 +152,6 @@ fn is_mcp_method(method: String) -> Bool:
             method.startswith("roots/") or
             method.startswith("sampling/"))
 
-fn extract_method_category(method: String) -> String:
-    """Extract the category from an MCP method name."""
-    if method == "initialize" or method == "initialized":
-        return "lifecycle"
-    
-    var slash_pos = method.find("/")
-    if slash_pos != -1:
-        return method[:slash_pos]
-    
-    return "unknown"
-
 # Protocol version validation
 fn is_compatible_version(version: String) -> Bool:
     """Check if a protocol version is compatible with this implementation."""
@@ -173,14 +162,12 @@ struct MCPMessage(Movable):
     """Wrapper for MCP messages with metadata."""
     var request_id: String
     var method: String
-    var category: String
     var timestamp: Int  # Unix timestamp
     var raw_json: String
     
     fn __init__(out self, request_id: String, method: String, raw_json: String):
         self.request_id = request_id
         self.method = method
-        self.category = extract_method_category(method)
         self.timestamp = 0  # TODO: Get actual timestamp, Pythonのtime.time()を使用
         self.raw_json = raw_json
     

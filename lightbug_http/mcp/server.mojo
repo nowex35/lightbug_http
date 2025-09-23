@@ -98,6 +98,33 @@ struct MCPServer(MCPHandler):
             raise Error("Server is already running")
         
         self.is_running = True
+        var http_transport = HTTPTransport(self, List[String](), False)
+        var http_server = Server(
+            name=self.server_info.name,
+            address="127.0.0.1",
+            max_concurrent_connections=100
+        )
+        print("MCP endpoint: http://localhost:8081/")
+        print("Example requests:")
+        print("1. Initialize: POST with {'jsonrpc':'2.0','method':'initialize','params':{'protocolVersion':'2025-06-18','clientInfo':{'name':'test','version':'1.0'}},'id':'1'}")
+        print("2. Tools list: POST with {'jsonrpc':'2.0','method':'tools/list','params':{},'id':'2'}")
+        print("3. Echo tool: POST with {'jsonrpc':'2.0','method':'tools/call','params':{'name':'echo','arguments':{'message':'Hello'}},'id':'3'}")
+        print()
+        print("Press Ctrl+C to stop")
+        try:
+            # Start listening for HTTP requests
+            http_server.listen_and_serve[HTTPTransport]("localhost:8081", http_transport)
+        except e:
+            print("Server error: " + String(e))
+        finally:
+            # Cleanup
+            print("\nShutting down...")
+            print("Final session count: " + String(self.get_active_session_count()))
+            var cleaned = self.cleanup_expired_sessions()
+            print("Cleaned up " + String(cleaned) + " expired sessions")
+            self.stop()
+            print("MCP server stopped")
+        
     
     fn stop(mut self) raises:
         """Stop the MCP server and close all connections."""
@@ -484,14 +511,18 @@ struct MCPServer(MCPHandler):
         """Register a new tool with the server."""
         self.tools_registry.register_tool(tool, executor)
         var _ = self.tools_registry.list_tools()
+
+    fn tool(mut self, name: String, description: String, parameters: MCPToolParameter, executor: ToolExecutionFunc) raises:
+        """Register a new tool with the server."""
+        var tool = MCPTool(name, description, parameters)
+        self.tools_registry.register_tool(tool, executor)
+        var _ = self.tools_registry.list_tools()
     
-    fn unregister_tool(mut self, tool_name: String) raises:
-        """Unregister a tool from the server."""
-        self.tools_registry.unregister_tool(tool_name)
-    
-    fn get_tools_registry(mut self) -> MCPToolRegistry:
-        """Get the tools registry for advanced operations."""
-        return self.tools_registry
+    fn tool(mut self, name: String, description: String, parameters: List[MCPToolParameter], executor: ToolExecutionFunc) raises:
+        """Register a new tool with the server (multiple parameters)."""
+        var tool = MCPTool(name, description, parameters)
+        self.tools_registry.register_tool(tool, executor)
+        var _ = self.tools_registry.list_tools()
     
     fn get_active_session_count(self) -> Int:
         """Get the number of active sessions."""
@@ -780,10 +811,3 @@ struct TemplatesHandler(RequestHandler):
             error = JSONRPCError(-32601, "Unknown templates method: " + request.method + ". Templates feature is postponed for future implementation.")
         
         return JSONRPCResponse.error_response(request.id, error)
-
-
-# Utility function for creating MCP servers
-fn create_mcp_server(name: String = "lightbug-mcp-server", 
-                    version: String = "1.0.0") -> MCPServer:
-    """Create a new MCP server with default configuration."""
-    return MCPServer(name, version)
