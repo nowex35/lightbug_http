@@ -170,7 +170,7 @@ struct MCPServer(MCPHandler):
             var expired_requests = self.timeout_manager.check_expired_requests()
             for i in range(len(expired_requests)):
                 var expired_id = expired_requests[i]
-                var cancellation = CancellationNotification(expired_id, "timeout")
+                var _ = CancellationNotification(expired_id, "timeout")
                 # Log the cancellation (in a real implementation, this would be sent to the client)
                 print("Request ", expired_id, " has timed out and was cancelled")
         except:
@@ -669,12 +669,9 @@ struct MCPServer(MCPHandler):
             # Parse the progress notification to extract request ID
             var request_id = self._extract_request_id_from_progress(notification.params)
             if request_id != "":
-                try:
-                    var success = self.timeout_manager.update_progress(request_id)
-                    if success:
-                        print("Progress updated for request: ", request_id)
-                except:
-                    print("Error updating progress for request: ", request_id)
+                var success = self.timeout_manager.update_progress(request_id)
+                if success:
+                    print("Progress updated for request: ", request_id)
         except:
             # Log error but don't fail the notification handling
             print("Error handling progress notification")
@@ -685,12 +682,9 @@ struct MCPServer(MCPHandler):
             # Parse the cancellation notification to extract request ID
             var request_id = self._extract_request_id_from_cancellation(notification.params)
             if request_id != "":
-                try:
-                    var success = self.timeout_manager.cancel_request(request_id)
-                    if success:
-                        print("Request explicitly cancelled: ", request_id)
-                except:
-                    print("Error cancelling request: ", request_id)
+                var success = self.timeout_manager.cancel_request(request_id)
+                if success:
+                    print("Request explicitly cancelled: ", request_id)
         except:
             # Log error but don't fail the notification handling
             print("Error handling cancellation notification")
