@@ -340,6 +340,21 @@ struct MCPToolResult(Movable):
         """Add text content to the result."""
         var content = MCPToolContent("text", text)
         self.content.append(content)
+
+    fn add_text_content(mut self, number: Int):
+        """Add text content to the result."""
+        var content = MCPToolContent("text", String(number))
+        self.content.append(content)
+
+    fn add_text_content(mut self, number: Float64):
+        """Add text content to the result."""
+        var content = MCPToolContent("text", String(number))
+        self.content.append(content)
+
+    fn add_text_content(mut self, boolean: Bool):
+        """Add text content to the result."""
+        var content = MCPToolContent("text", String(boolean))
+        self.content.append(content)
     
     fn to_json(self) -> String:
         """Convert result to MCP JSON format."""
@@ -354,8 +369,91 @@ struct MCPToolResult(Movable):
         json = json + "]}"
         return json
 
+@value
+struct MCPToolRequest(Movable):
+    """Parsed and validated tool request parameters."""
+    var parameters: Dict[String, String]
+    var tool_name: String
+    var raw_arguments: String
+
+    fn __init__(out self, tool_name: String, raw_arguments: String):
+        self.tool_name = tool_name
+        self.raw_arguments = raw_arguments
+        self.parameters = Dict[String, String]()
+
+    fn get_string(self, name: String, default_value: String = "") -> String:
+        """Get a string parameter value."""
+        if name in self.parameters:
+            try:
+                var value = self.parameters[name]
+                # Remove quotes if present
+                if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+                    return value[1:-1]
+                if len(value) >= 2 and value.startswith("'") and value.endswith("'"):
+                    return value[1:-1]
+                return value
+            except:
+                return default_value
+        return default_value
+
+    fn get_number(self, name: String, default_value: Float64 = 0.0) raises -> Float64:
+        """Get a number parameter value."""
+        if name in self.parameters:
+            try:
+                var value = self.parameters[name]
+                # Remove quotes if present
+                if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+                    value = value[1:-1]
+                if len(value) >= 2 and value.startswith("'") and value.endswith("'"):
+                    value = value[1:-1]
+                return atof(value)
+            except:
+                return default_value
+        return default_value
+
+    fn get_int(self, name: String, default_value: Int = 0) raises -> Int:
+        """Get an integer parameter value."""
+        if name in self.parameters:
+            try:
+                var value = self.parameters[name]
+                # Remove quotes if present
+                if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+                    value = value[1:-1]
+                if len(value) >= 2 and value.startswith("'") and value.endswith("'"):
+                    value = value[1:-1]
+                return atol(value)
+            except:
+                return default_value
+        return default_value
+
+    fn get_bool(self, name: String, default_value: Bool = False) -> Bool:
+        """Get a boolean parameter value."""
+        if name in self.parameters:
+            try:
+                var value = self.parameters[name]
+                # Remove quotes if present
+                if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+                    value = value[1:-1]
+                if len(value) >= 2 and value.startswith("'") and value.endswith("'"):
+                    value = value[1:-1]
+                return value.lower() == "true"
+            except:
+                return default_value
+        return default_value
+
+    fn has_parameter(self, name: String) -> Bool:
+        """Check if a parameter exists."""
+        return name in self.parameters
+
+    fn get_parameter_names(self) -> List[String]:
+        """Get all parameter names."""
+        var names = List[String]()
+        for name in self.parameters:
+            names.append(name)
+        return names
+
 # Tool execution function type
-alias ToolExecutionFunc = fn(String) raises -> MCPToolResult
+alias ToolExecutionFunc = fn(MCPToolRequest) raises -> MCPToolResult
 
 @value
 struct MCPToolRegistry(Movable):
@@ -402,22 +500,22 @@ struct MCPToolRegistry(Movable):
         if not self.enabled:
             var error_result = MCPToolResult(True, "Tool execution is disabled")
             return error_result
-        
+
         if tool_name not in self.tools:
             var error_result = MCPToolResult(True, "Tool not found: " + tool_name)
             return error_result
-        
+
         var tool = self.tools[tool_name]
         if not tool.enabled:
             var error_result = MCPToolResult(True, "Tool is disabled: " + tool_name)
             return error_result
-        
+
         # Safety checks
         if self.safety_checks_enabled:
             if self.current_executions >= self.max_concurrent_executions:
                 var error_result = MCPToolResult(True, "Maximum concurrent executions exceeded")
                 return error_result
-        
+
         # Validate arguments
         try:
             var validation = tool.validate_arguments(arguments_json)
@@ -427,12 +525,22 @@ struct MCPToolRegistry(Movable):
         except e:
             var error_result = MCPToolResult(True, "Argument validation failed")
             return error_result
-        
+
+        # Parse arguments into MCPToolRequest
+        var request = MCPToolRequest(tool_name, arguments_json)
+        try:
+            var parsed_args = tool._parse_json_arguments(arguments_json)
+            for param_name in parsed_args:
+                request.parameters[param_name] = parsed_args[param_name]
+        except e:
+            var error_result = MCPToolResult(True, "Failed to parse arguments")
+            return error_result
+
         # Execute the tool with safety monitoring
         self.current_executions += 1
         try:
             var executor = self.tool_executors[tool_name]
-            var result = self._execute_with_timeout(executor, arguments_json)
+            var result = self._execute_with_timeout_request(executor, request)
             self.current_executions -= 1
             return result
         except e:
@@ -441,11 +549,18 @@ struct MCPToolRegistry(Movable):
             return error_result
     
     fn _execute_with_timeout(self, executor: ToolExecutionFunc, arguments_json: String) raises -> MCPToolResult:
-        """Execute a tool function with timeout protection."""
+        """Execute a tool function with timeout protection (legacy)."""
+        # TODO: This is kept for backward compatibility but should be removed
+        # when all tools are migrated to use MCPToolRequest
+        var request = MCPToolRequest("legacy", arguments_json)
+        return executor(request)
+
+    fn _execute_with_timeout_request(self, executor: ToolExecutionFunc, request: MCPToolRequest) raises -> MCPToolResult:
+        """Execute a tool function with timeout protection using MCPToolRequest."""
         # TODO: Implement timeout mechanism in future version (Phase 4)
         # Current implementation: Direct execution without timeout
         # Requires async I/O system for proper timeout handling
-        return executor(arguments_json)
+        return executor(request)
 
 # JSON utility functions
 fn escape_json_string(value: String) -> String:

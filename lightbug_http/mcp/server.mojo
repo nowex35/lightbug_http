@@ -11,6 +11,7 @@ from .transport import MCPHandler
 from .session import SessionManager, MCPSession
 from .tools import MCPTool, MCPToolResult, MCPToolRegistry, ToolExecutionFunc, create_string_parameter
 from .utils import generate_connection_id
+from .timeout import TimeoutManager, TimeoutConfig, CancellationNotification, ProgressNotification, create_timeout_error, create_cancellation_error
 
 # Connection states
 alias ConnectionState = Int
@@ -70,17 +71,19 @@ struct MCPServer(MCPHandler):
     var resources_handler: ResourcesHandler
     var prompts_handler: PromptsHandler
     var templates_handler: TemplatesHandler
+    var timeout_manager: TimeoutManager
     var is_running: Bool
     
-    fn __init__(out self, 
+    fn __init__(out self,
                 server_name: String = "lightbug-mcp-server",
-                server_version: String = "1.0.0"):
+                server_version: String = "1.0.0",
+                enable_timeouts: Bool = True):
         self.server_info = MCPServerInfo(server_name, server_version)
         # Enable only tools capability (resources and prompts postponed)
         self.server_capabilities = MCPCapabilities(
-            tools=True, 
-            resources=False, 
-            prompts=False, 
+            tools=True,
+            resources=False,
+            prompts=False,
             logging=True
         )
         self.connections = Dict[String, MCPConnection]()
@@ -90,6 +93,19 @@ struct MCPServer(MCPHandler):
         self.resources_handler = ResourcesHandler()
         self.prompts_handler = PromptsHandler()
         self.templates_handler = TemplatesHandler()
+
+        # Initialize timeout manager with sensible defaults
+        if enable_timeouts:
+            var default_config = TimeoutConfig(
+                default_timeout_ms=30000,    # 30 seconds default (changed for testing)
+                maximum_timeout_ms=300000,   # 5 minutes maximum
+                progress_reset_timeout_ms=5000,  # 5 seconds additional on progress
+                enable_progress_reset=True
+            )
+            self.timeout_manager = TimeoutManager(default_config)
+        else:
+            self.timeout_manager = TimeoutManager()
+
         self.is_running = False
     
     fn start(mut self) raises:
@@ -141,29 +157,75 @@ struct MCPServer(MCPHandler):
         
         self.is_running = False
     
-    fn handle_request(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
-        """Handle incoming JSON-RPC requests."""
-        
+    fn handle_request(mut self, request: JSONRPCRequest, custom_timeout_ms: Int = -1) raises -> JSONRPCResponse:
+        """Handle incoming JSON-RPC requests with timeout management."""
+
         if not self.is_running:
             var error = server_not_initialized()
             log_error(error, "handle_request")
             return JSONRPCResponse.error_response(request.id, error)
-        
-        # Route request based on method
-        if request.method == "initialize":
-            return self._handle_initialize(request)
-        elif request.method.startswith("tools/"):
-            return self._handle_tools_request(request)
-        elif request.method.startswith("resources/templates/"):
-            return self._handle_templates_request(request)
-        elif request.method.startswith("resources/"):
-            return self._handle_resources_request(request)
-        elif request.method.startswith("prompts/"):
-            return self._handle_prompts_request(request)
-        else:
-            var error = method_not_found()
+
+        # Check for expired requests and send cancellation notifications
+        try:
+            var expired_requests = self.timeout_manager.check_expired_requests()
+            for i in range(len(expired_requests)):
+                var expired_id = expired_requests[i]
+                var cancellation = CancellationNotification(expired_id, "timeout")
+                # Log the cancellation (in a real implementation, this would be sent to the client)
+                print("Request ", expired_id, " has timed out and was cancelled")
+        except:
+            pass  # Continue even if timeout checking fails
+
+        # Check if this request was already cancelled
+        if self.timeout_manager.is_request_cancelled(request.id):
+            var error = create_cancellation_error(request.id, request.method)
             return JSONRPCResponse.error_response(request.id, error)
-    
+
+        # Add request to timeout tracking (except for initialize which doesn't need timeout)
+        if request.method != "initialize":
+            try:
+                self.timeout_manager.add_request(request, custom_timeout_ms)
+            except:
+                pass  # Continue even if timeout tracking fails
+
+        try:
+            # Route request based on method
+            var response: JSONRPCResponse
+            if request.method == "initialize":
+                response = self._handle_initialize(request)
+            elif request.method.startswith("tools/"):
+                response = self._handle_tools_request(request)
+            elif request.method.startswith("resources/templates/"):
+                response = self._handle_templates_request(request)
+            elif request.method.startswith("resources/"):
+                response = self._handle_resources_request(request)
+            elif request.method.startswith("prompts/"):
+                response = self._handle_prompts_request(request)
+            else:
+                var error = method_not_found()
+                response = JSONRPCResponse.error_response(request.id, error)
+
+            # Mark request as completed
+            try:
+                self.timeout_manager.complete_request(request.id)
+            except:
+                pass  # Continue even if completion tracking fails
+            return response
+
+        except e:
+            # Mark request as completed even if it failed
+            try:
+                self.timeout_manager.complete_request(request.id)
+            except:
+                pass  # Continue even if completion tracking fails
+            var error = internal_error()
+            log_error(error, "handle_request_failed")
+            return JSONRPCResponse.error_response(request.id, error)
+
+    fn handle_request(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
+        """Handle incoming JSON-RPC requests (overload for interface compliance)."""
+        return self.handle_request(request, -1)
+
     fn handle_notification(mut self, notification: JSONRPCNotification) raises:
         """Handle incoming JSON-RPC notifications."""
         if not self.is_running:
@@ -171,8 +233,12 @@ struct MCPServer(MCPHandler):
         
         if notification.method == "initialized":
             self._handle_initialized(notification)
+        elif notification.method == "notifications/progress":
+            self._handle_progress_notification(notification)
+        elif notification.method == "notifications/cancelled":
+            self._handle_cancellation_notification(notification)
         elif notification.method.startswith("notifications/"):
-            # Handle various notification types
+            # Handle other notification types
             pass
     
     fn handle_request_with_session(mut self, request: JSONRPCRequest, session_id: String) raises -> JSONRPCResponse:
@@ -197,8 +263,8 @@ struct MCPServer(MCPHandler):
                     # Invalid session ID, continue with regular handling
                     pass
             
-            # Delegate to regular handler
-            return self.handle_request(request)
+            # Delegate to regular handler with default timeout
+            return self.handle_request(request, -1)
     
     fn handle_notification_with_session(mut self, notification: JSONRPCNotification, session_id: String) raises:
         """Handle incoming JSON-RPC notifications with session management."""
@@ -596,7 +662,109 @@ struct MCPServer(MCPHandler):
                 
         return ToolCallParams(name, arguments)
 
-# Helper structure for initialize parameters
+    # Timeout and progress handling methods
+    fn _handle_progress_notification(mut self, notification: JSONRPCNotification) raises:
+        """Handle progress notifications to reset request timeouts."""
+        try:
+            # Parse the progress notification to extract request ID
+            var request_id = self._extract_request_id_from_progress(notification.params)
+            if request_id != "":
+                try:
+                    var success = self.timeout_manager.update_progress(request_id)
+                    if success:
+                        print("Progress updated for request: ", request_id)
+                except:
+                    print("Error updating progress for request: ", request_id)
+        except:
+            # Log error but don't fail the notification handling
+            print("Error handling progress notification")
+
+    fn _handle_cancellation_notification(mut self, notification: JSONRPCNotification) raises:
+        """Handle explicit cancellation notifications."""
+        try:
+            # Parse the cancellation notification to extract request ID
+            var request_id = self._extract_request_id_from_cancellation(notification.params)
+            if request_id != "":
+                try:
+                    var success = self.timeout_manager.cancel_request(request_id)
+                    if success:
+                        print("Request explicitly cancelled: ", request_id)
+                except:
+                    print("Error cancelling request: ", request_id)
+        except:
+            # Log error but don't fail the notification handling
+            print("Error handling cancellation notification")
+
+    fn _extract_request_id_from_progress(self, params_json: String) -> String:
+        """Extract request ID from progress notification params."""
+        # Expected format: {"progressToken": "...", "value": {"requestId": "..."}}
+        # This is a simplified parser - in production, use a proper JSON parser
+        var request_id_start = params_json.find('"requestId"')
+        if request_id_start == -1:
+            return ""
+
+        var colon_pos = params_json.find(':', request_id_start)
+        if colon_pos == -1:
+            return ""
+
+        var quote_start = params_json.find('"', colon_pos)
+        if quote_start == -1:
+            return ""
+
+        var quote_end = params_json.find('"', quote_start + 1)
+        if quote_end == -1:
+            return ""
+
+        return params_json[quote_start + 1:quote_end]
+
+    fn _extract_request_id_from_cancellation(self, params_json: String) -> String:
+        """Extract request ID from cancellation notification params."""
+        # Expected format: {"id": "...", "reason": "..."}
+        var id_start = params_json.find('"id"')
+        if id_start == -1:
+            return ""
+
+        var colon_pos = params_json.find(':', id_start)
+        if colon_pos == -1:
+            return ""
+
+        var quote_start = params_json.find('"', colon_pos)
+        if quote_start == -1:
+            return ""
+
+        var quote_end = params_json.find('"', quote_start + 1)
+        if quote_end == -1:
+            return ""
+
+        return params_json[quote_start + 1:quote_end]
+
+    # Timeout configuration methods
+    fn configure_timeouts(mut self, config: TimeoutConfig):
+        """Configure timeout settings for the server."""
+        self.timeout_manager = TimeoutManager(config)
+
+    fn get_timeout_stats(self) -> TimeoutStats:
+        """Get current timeout statistics."""
+        var stats = TimeoutStats()
+        stats.pending_requests = self.timeout_manager.get_pending_request_count()
+        stats.cancelled_requests = self.timeout_manager.get_cancelled_request_count()
+        return stats
+
+    fn cleanup_timeout_data(mut self):
+        """Clean up old timeout tracking data."""
+        self.timeout_manager.cleanup_completed_requests()
+
+# Helper structures
+@value
+struct TimeoutStats(Movable):
+    """Statistics for timeout management."""
+    var pending_requests: Int
+    var cancelled_requests: Int
+
+    fn __init__(out self):
+        self.pending_requests = 0
+        self.cancelled_requests = 0
+
 @value
 struct InitializeParams(Movable):
     """Parameters for the initialize request."""

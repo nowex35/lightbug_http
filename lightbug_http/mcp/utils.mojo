@@ -60,3 +60,11 @@ fn current_time_ms() -> Int64:
     except:
         # Fallback to a simple counter if Python fails
         return 1000000
+
+fn sleep_seconds(seconds: Int) raises:
+    """Sleep for the specified number of seconds using Python's time.sleep."""
+    try:
+        var time = Python.import_module("time")
+        time.sleep(seconds)
+    except:
+        raise Error("Failed to sleep using Python time module")
