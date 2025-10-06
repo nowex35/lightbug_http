@@ -6,7 +6,7 @@ tracking sessions, and handling cleanup of long-lived HTTP streams.
 
 from collections import Dict, Optional
 from lightbug_http.connection import TCPConnection
-from python import Python
+from lightbug_http.mcp.utils import current_time_ms
 
 
 @value
@@ -18,8 +18,7 @@ struct StreamInfo:
     var last_activity: Float64
 
     fn __init__(out self, stream_id: String, session_id: String) raises:
-        var time_module = Python.import_module("time")
-        var current_time = Float64(time_module.time())
+        var current_time = Float64(current_time_ms()) / 1000.0  # Convert milliseconds to seconds
         self.stream_id = stream_id
         self.session_id = session_id
         self.created_at = current_time
@@ -27,13 +26,11 @@ struct StreamInfo:
 
     fn update_activity(mut self) raises:
         """Update the last activity timestamp."""
-        var time_module = Python.import_module("time")
-        self.last_activity = Float64(time_module.time())
+        self.last_activity = Float64(current_time_ms()) / 1000.0  # Convert milliseconds to seconds
 
     fn is_idle(self, timeout_seconds: Float64) raises -> Bool:
         """Check if the stream has been idle for longer than the timeout."""
-        var time_module = Python.import_module("time")
-        var current = Float64(time_module.time())
+        var current = Float64(current_time_ms()) / 1000.0  # Convert milliseconds to seconds
         return (current - self.last_activity) > timeout_seconds
 
 

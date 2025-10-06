@@ -1,10 +1,3 @@
-"""Streamable HTTP Exchange - unified request/response handling.
-
-This module provides a unified interface for handling streaming HTTP
-requests and responses, solving the connection ownership problem by
-keeping the connection in the server while providing read/write access.
-"""
-
 from memory import Span
 from collections import Optional
 from lightbug_http.io.bytes import Bytes, ByteReader, ByteWriter, bytes
@@ -14,6 +7,8 @@ from lightbug_http.uri import URI
 from lightbug_http.connection import TCPConnection
 from lightbug_http.io.sync import Duration
 from lightbug_http.strings import strHttp11
+from lightbug_http.mcp.utils import hex
+from lightbug_http.streaming.shared_connection import SharedConnection
 
 
 struct StreamableHTTPExchange:
@@ -37,7 +32,7 @@ struct StreamableHTTPExchange:
     var _response_headers_sent: Bool
 
     # Streaming state
-    var _connection: TCPConnection
+    var _connection: SharedConnection
     var _use_chunked_encoding: Bool
     var _content_length: Int
     var _bytes_read: Int
@@ -46,7 +41,7 @@ struct StreamableHTTPExchange:
 
     fn __init__(
         out self,
-        owned connection: TCPConnection,
+        connection: SharedConnection,
         method: String,
         uri: URI,
         protocol: String,
@@ -58,7 +53,7 @@ struct StreamableHTTPExchange:
         """Initialize an HTTP exchange.
 
         Args:
-            connection: The TCP connection (will be owned by this exchange)
+            connection: The shared TCP connection
             method: HTTP method (GET, POST, etc.)
             uri: Request URI
             protocol: HTTP protocol version
@@ -77,7 +72,7 @@ struct StreamableHTTPExchange:
         self.response_headers = Headers()
         self._response_headers_sent = False
 
-        self._connection = connection^
+        self._connection = connection  # Copy shared connection
         self._use_chunked_encoding = True  # Default to chunked for streaming
         self._content_length = content_length
         self._bytes_read = 0
@@ -104,15 +99,15 @@ struct StreamableHTTPExchange:
 
     @staticmethod
     fn from_connection(
-        owned connection: TCPConnection,
+        connection: SharedConnection,
         addr: String,
         max_uri_length: Int,
         initial_buffer: Span[Byte]
     ) raises -> StreamableHTTPExchange:
-        """Create an exchange from a TCP connection with parsed headers.
+        """Create an exchange from a shared TCP connection with parsed headers.
 
         Args:
-            connection: The TCP connection
+            connection: The shared TCP connection
             addr: Server address
             max_uri_length: Maximum allowed URI length
             initial_buffer: Buffer containing at least the request headers
@@ -144,11 +139,23 @@ struct StreamableHTTPExchange:
         except e:
             raise Error("Failed to parse cookies: " + String(e))
 
-        var uri = URI.parse(addr + uri_str)
+        # Create full URI safely
+        var full_uri: String
+        if uri_str.startswith("/"):
+            full_uri = addr + uri_str
+        else:
+            full_uri = uri_str  # Already absolute
+            
+        var uri: URI
+        try:
+            uri = URI.parse(full_uri)
+        except e:
+            raise Error("Failed to parse URI: " + String(e))
+            
         var content_length = headers.content_length()
 
         return StreamableHTTPExchange(
-            connection^,
+            connection,  # Pass shared connection by copy
             method,
             uri,
             protocol,
@@ -366,16 +373,13 @@ struct StreamableHTTPExchange:
         """
         pass
 
-    fn take_connection(owned self) -> TCPConnection:
-        """Take ownership of the connection.
-
-        This allows the server to reclaim the connection after the exchange is done.
-        This method consumes the exchange.
+    fn get_connection(self) -> SharedConnection:
+        """Get a copy of the shared connection.
 
         Returns:
-            The TCP connection.
+            A copy of the shared connection (reference count increased).
         """
-        return self._connection^
+        return self._connection
 
     fn teardown(mut self) raises:
         """Close the connection."""

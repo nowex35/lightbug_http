@@ -68,3 +68,26 @@ fn sleep_seconds(seconds: Int) raises:
         time.sleep(seconds)
     except:
         raise Error("Failed to sleep using Python time module")
+
+fn hex(value: Int) -> String:
+    """Convert an integer to hexadecimal string.
+    
+    Args:
+        value: The integer value to convert.
+        
+    Returns:
+        Hexadecimal string representation.
+    """
+    if value == 0:
+        return "0"
+    
+    var result = String("")
+    var num = value
+    var hex_chars = "0123456789abcdef"
+    
+    while num > 0:
+        var digit = num % 16
+        result = hex_chars[digit] + result
+        num = num // 16
+    
+    return result

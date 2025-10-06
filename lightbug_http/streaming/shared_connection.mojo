@@ -1,0 +1,53 @@
+"""Simple connection wrapper for safe connection sharing."""
+
+from memory import UnsafePointer
+from lightbug_http.connection import TCPConnection
+from lightbug_http.io.bytes import Bytes
+from memory import Span
+
+
+struct SharedConnection:
+    """Simple wrapper for TCPConnection that allows copying.
+    
+    This provides a simple way to share connection access without
+    complex ownership management.
+    """
+    var _connection: UnsafePointer[TCPConnection]
+    var _owned: Bool
+    
+    fn __init__(out self, owned conn: TCPConnection):
+        """Create a new shared connection from an owned TCPConnection."""
+        # Store the connection in heap memory
+        self._connection = UnsafePointer[TCPConnection].alloc(1)
+        self._connection.init_pointee_move(conn^)
+        self._owned = True
+    
+    fn __copyinit__(out self, other: SharedConnection):
+        """Copy constructor shares the same connection."""
+        self._connection = other._connection
+        self._owned = False  # Only the original owns the connection
+    
+    fn __moveinit__(out self, owned other: SharedConnection):
+        """Move constructor."""
+        self._connection = other._connection
+        self._owned = other._owned
+        other._owned = False  # Transfer ownership
+    
+    fn read(self, mut buffer: Bytes) raises -> Int:
+        """Read from the connection."""
+        return self._connection[].read(buffer)
+    
+    fn write(self, data: Span[Byte]) raises -> Int:
+        """Write to the connection."""
+        return self._connection[].write(data)
+    
+    fn teardown(self) raises:
+        """Close the connection if owned."""
+        if self._owned:
+            self._connection[].teardown()
+            self._connection.free()
+    
+    fn get_remote_address(self) -> String:
+        """Get remote address information."""
+        var conn_ptr = self._connection
+        return conn_ptr[].socket._remote_address.ip + ":" + String(conn_ptr[].socket._remote_address.port)

@@ -15,6 +15,7 @@ from lightbug_http.http.common_response import InternalError, BadRequest, URIToo
 from lightbug_http.streaming.streamable_exchange import StreamableHTTPExchange
 from lightbug_http.streaming.streamable_service import StreamableHTTPService
 from lightbug_http.streaming.stream_manager import StreamManager
+from lightbug_http.streaming.shared_connection import SharedConnection
 from lightbug_http.error import ErrorHandler
 
 
@@ -117,14 +118,21 @@ struct StreamingServer(Movable):
         """
         while True:
             var conn = ln.accept()
-            self.serve_connection(conn^, handler)
+            # Wrap connection in SharedConnection for safe sharing
+            var shared_conn = SharedConnection(conn^)
+            
+            try:
+                self.serve_connection(shared_conn, handler)
+            except e:
+                logger.error("Error serving connection:", String(e))
+                shared_conn.teardown()
 
             # Periodic cleanup of idle streams
             _ = self._stream_manager.cleanup_idle_streams()
 
     fn serve_connection[T: StreamableHTTPService](
         mut self,
-        owned conn: TCPConnection,
+        shared_conn: SharedConnection,
         mut handler: T
     ) raises -> None:
         """Serve a single streaming connection.
@@ -133,14 +141,12 @@ struct StreamingServer(Movable):
             T: The type of StreamableHTTPService that handles incoming requests.
 
         Args:
-            conn: A connection object representing a client connection.
+            shared_conn: A shared connection object representing a client connection.
             handler: An object that handles incoming streaming HTTP requests.
         """
         logger.debug(
-            "Streaming connection accepted! IP:",
-            conn.socket._remote_address.ip,
-            "Port:",
-            conn.socket._remote_address.port
+            "Streaming connection accepted! Remote:",
+            shared_conn.get_remote_address()
         )
 
         var max_request_uri_length = self._max_request_uri_length
@@ -148,92 +154,83 @@ struct StreamingServer(Movable):
             max_request_uri_length = default_max_request_uri_length
 
         var req_number = 0
-        var current_conn = conn^
+        # Use shared connection for safe access
+        
+        req_number += 1
 
+        # Read headers first
+        var header_buffer = Bytes()
         while True:
-            req_number += 1
+            try:
+                var temp_buffer = Bytes(capacity=default_buffer_size)
+                var bytes_read = shared_conn.read(temp_buffer)
+                logger.debug("Bytes read:", bytes_read)
 
-            # Read headers first
-            var header_buffer = Bytes()
-            while True:
-                try:
-                    var temp_buffer = Bytes(capacity=default_buffer_size)
-                    var bytes_read = current_conn.read(temp_buffer)
-                    logger.debug("Bytes read:", bytes_read)
+                if bytes_read == 0:
+                    shared_conn.teardown()
+                    return
 
-                    if bytes_read == 0:
-                        current_conn.teardown()
-                        return
+                header_buffer.extend(temp_buffer^)
 
-                    header_buffer.extend(temp_buffer^)
+                if BytesConstant.DOUBLE_CRLF in ByteView(header_buffer):
+                    logger.debug("Found end of headers")
+                    break
 
-                    if BytesConstant.DOUBLE_CRLF in ByteView(header_buffer):
-                        logger.debug("Found end of headers")
-                        break
+            except e:
+                shared_conn.teardown()
+                if String(e) == "EOF":
+                    return
+                else:
+                    logger.error(
+                        "StreamingServer.serve_connection: Failed to read headers. Expected EOF, got:",
+                        String(e)
+                    )
+                    return
 
-                except e:
-                    current_conn.teardown()
-                    if String(e) == "EOF":
-                        return
-                    else:
-                        logger.error(
-                            "StreamingServer.serve_connection: Failed to read headers. Expected EOF, got:",
-                            String(e)
-                        )
-                        return
-
-            #  Parse and process request
-            # Note: from_connection may raise, which will propagate up
-            # In that case, current_conn is consumed but that's fine since we're exiting
-            var exchange = StreamableHTTPExchange.from_connection(
-                current_conn^,
+        # Parse and process request using shared connection
+        var exchange: StreamableHTTPExchange
+        try:
+            exchange = StreamableHTTPExchange.from_connection(
+                shared_conn,  # Pass shared connection by copy
                 self.address(),
                 Int(max_request_uri_length),
                 Span(header_buffer)
             )
+        except e:
+            logger.error("Failed to parse request:", String(e))
+            return
 
-            # Register the stream
-            var stream_id = self._stream_manager.generate_stream_id()
-            var session_id = self._stream_manager.generate_session_id()
-            self._stream_manager.register_stream(stream_id, session_id)
+        # Register the stream
+        var stream_id = self._stream_manager.generate_stream_id()
+        var session_id = self._stream_manager.generate_session_id()
+        self._stream_manager.register_stream(stream_id, session_id)
 
-            var close_connection = (not self.tcp_keep_alive) or exchange.connection_close()
-            var req_method = exchange.method
-            var req_path = exchange.uri.path
+        var close_connection = (not self.tcp_keep_alive) or exchange.connection_close()
+        var req_method = exchange.method
+        var req_path = exchange.uri.path
 
-            # Call the streaming service handler
-            # Handler writes response directly via exchange
-            var handler_error: Optional[String] = None
-            try:
-                handler.call(exchange)
-            except e:
-                handler_error = String(e)
+        # Call the streaming service handler
+        # Handler writes response directly via exchange
+        var handler_error: Optional[String] = None
+        try:
+            handler.call(exchange)
+        except e:
+            handler_error = String(e)
 
-            logger.debug(
-                req_method,
-                req_path,
-                exchange.response_status_code,
-                "(streaming)"
-            )
+        logger.debug(
+            req_method,
+            req_path,
+            exchange.response_status_code,
+            "(streaming)"
+        )
 
-            # Clean up the stream
-            _ = self._stream_manager.cleanup_stream(stream_id)
+        # Clean up the stream
+        _ = self._stream_manager.cleanup_stream(stream_id)
 
-            # Get connection back from exchange
-            current_conn = exchange^.take_connection()
-
-            if handler_error:
-                logger.error("Handler error:", handler_error.value())
-                current_conn.teardown()
-                return
-
-            if close_connection:
-                current_conn.teardown()
-                break
-
-        # This point is never reached (while True with only return/break)
-        # But needed for Mojo's lifetime analysis
-        current_conn.teardown()
+        # Connection is automatically managed by SharedConnection reference counting
+        if handler_error:
+            logger.error("Handler error:", handler_error.value())
+            shared_conn.teardown()
 
     fn active_streams(self) -> Int:
         """Get the number of currently active streams.
