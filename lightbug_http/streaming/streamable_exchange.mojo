@@ -1,12 +1,12 @@
 from memory import Span
 from collections import Optional
-from lightbug_http.io.bytes import Bytes, ByteReader, ByteWriter, bytes
+from lightbug_http.io.bytes import Bytes, ByteReader, ByteWriter, bytes, ByteView
 from lightbug_http.header import Headers, HeaderKey
 from lightbug_http.cookie import RequestCookieJar
 from lightbug_http.uri import URI
 from lightbug_http.connection import TCPConnection
 from lightbug_http.io.sync import Duration
-from lightbug_http.strings import strHttp11
+from lightbug_http.strings import strHttp11, BytesConstant
 from lightbug_http.mcp.utils import hex
 from lightbug_http.streaming.shared_connection import SharedConnection
 
@@ -38,6 +38,7 @@ struct StreamableHTTPExchange:
     var _bytes_read: Int
     var _is_complete: Bool
     var buffer_size: Int
+    var _buffered_body: Bytes  # Body data already read from initial buffer
 
     fn __init__(
         out self,
@@ -48,7 +49,8 @@ struct StreamableHTTPExchange:
         headers: Headers,
         cookies: RequestCookieJar,
         content_length: Int = -1,
-        buffer_size: Int = 4096
+        buffer_size: Int = 4096,
+        buffered_body: Bytes = Bytes()
     ):
         """Initialize an HTTP exchange.
 
@@ -61,6 +63,7 @@ struct StreamableHTTPExchange:
             cookies: Request cookies
             content_length: Content-Length if known, -1 otherwise
             buffer_size: Buffer size for streaming operations
+            buffered_body: Any request body data already read from initial buffer
         """
         self.method = method
         self.uri = uri
@@ -78,6 +81,7 @@ struct StreamableHTTPExchange:
         self._bytes_read = 0
         self._is_complete = False
         self.buffer_size = buffer_size
+        self._buffered_body = buffered_body
 
     fn __moveinit__(out self, owned existing: Self):
         self.method = existing.method^
@@ -96,6 +100,7 @@ struct StreamableHTTPExchange:
         self._bytes_read = existing._bytes_read
         self._is_complete = existing._is_complete
         self.buffer_size = existing.buffer_size
+        self._buffered_body = existing._buffered_body^
 
     @staticmethod
     fn from_connection(
@@ -145,14 +150,33 @@ struct StreamableHTTPExchange:
             full_uri = addr + uri_str
         else:
             full_uri = uri_str  # Already absolute
-            
+
         var uri: URI
         try:
             uri = URI.parse(full_uri)
         except e:
             raise Error("Failed to parse URI: " + String(e))
-            
+
         var content_length = headers.content_length()
+
+        # Extract any body data that was read with the headers
+        # Find the end of headers (DOUBLE_CRLF) and extract remaining bytes
+        var buffered_body = Bytes()
+        var double_crlf = BytesConstant.DOUBLE_CRLF
+
+        # Search for DOUBLE_CRLF in initial_buffer
+        for i in range(len(initial_buffer) - 3):
+            var matches = (initial_buffer[i] == double_crlf[0] and
+                          initial_buffer[i+1] == double_crlf[1] and
+                          initial_buffer[i+2] == double_crlf[2] and
+                          initial_buffer[i+3] == double_crlf[3])
+            if matches:
+                # Found end of headers, extract remaining bytes as body
+                var body_start = i + 4
+                if body_start < len(initial_buffer):
+                    for j in range(body_start, len(initial_buffer)):
+                        buffered_body.append(initial_buffer[j])
+                break
 
         return StreamableHTTPExchange(
             connection,  # Pass shared connection by copy
@@ -161,7 +185,9 @@ struct StreamableHTTPExchange:
             protocol,
             headers,
             cookies,
-            content_length
+            content_length,
+            4096,  # buffer_size
+            buffered_body^  # Pass any buffered body data
         )
 
     fn connection_close(self) raises -> Bool:
@@ -187,6 +213,29 @@ struct StreamableHTTPExchange:
         """
         if self._is_complete:
             return Bytes()
+
+        # First, return any buffered body data
+        if len(self._buffered_body) > 0:
+            var chunk_size = min(len(self._buffered_body), self.buffer_size)
+            var result = Bytes()
+
+            # Extract chunk_size bytes from buffered_body
+            for i in range(chunk_size):
+                result.append(self._buffered_body[i])
+
+            # Remove returned bytes from buffer
+            var remaining = Bytes()
+            for i in range(chunk_size, len(self._buffered_body)):
+                remaining.append(self._buffered_body[i])
+            self._buffered_body = remaining^
+
+            self._bytes_read += chunk_size
+
+            # Check if we're complete
+            if self._content_length >= 0 and self._bytes_read >= self._content_length:
+                self._is_complete = True
+
+            return result^
 
         if self._content_length >= 0:
             var remaining = self._content_length - self._bytes_read
