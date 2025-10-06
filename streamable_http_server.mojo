@@ -51,6 +51,6 @@ def main():
         )
         var service = StreamingTestService()
 
-        server.listen_and_serve("0.0.0.0:8080", service)
+        server.listen_and_serve("127.0.0.1:8082", service)
     except e:
         print("Error:", e)

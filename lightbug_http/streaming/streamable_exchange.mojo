@@ -373,14 +373,6 @@ struct StreamableHTTPExchange:
         """
         pass
 
-    fn get_connection(self) -> SharedConnection:
-        """Get a copy of the shared connection.
-
-        Returns:
-            A copy of the shared connection (reference count increased).
-        """
-        return self._connection
-
     fn teardown(mut self) raises:
         """Close the connection."""
         self._connection.teardown()

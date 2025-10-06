@@ -118,7 +118,6 @@ struct StreamingServer(Movable):
         """
         while True:
             var conn = ln.accept()
-            # Wrap connection in SharedConnection for safe sharing
             var shared_conn = SharedConnection(conn^)
             
             try:
@@ -127,7 +126,6 @@ struct StreamingServer(Movable):
                 logger.error("Error serving connection:", String(e))
                 shared_conn.teardown()
 
-            # Periodic cleanup of idle streams
             _ = self._stream_manager.cleanup_idle_streams()
 
     fn serve_connection[T: StreamableHTTPService](
@@ -154,11 +152,9 @@ struct StreamingServer(Movable):
             max_request_uri_length = default_max_request_uri_length
 
         var req_number = 0
-        # Use shared connection for safe access
-        
         req_number += 1
 
-        # Read headers first
+        # Read headers
         var header_buffer = Bytes()
         while True:
             try:
@@ -181,17 +177,14 @@ struct StreamingServer(Movable):
                 if String(e) == "EOF":
                     return
                 else:
-                    logger.error(
-                        "StreamingServer.serve_connection: Failed to read headers. Expected EOF, got:",
-                        String(e)
-                    )
+                    logger.error("Failed to read headers:", String(e))
                     return
 
-        # Parse and process request using shared connection
+        # Parse request
         var exchange: StreamableHTTPExchange
         try:
             exchange = StreamableHTTPExchange.from_connection(
-                shared_conn,  # Pass shared connection by copy
+                shared_conn,
                 self.address(),
                 Int(max_request_uri_length),
                 Span(header_buffer)
@@ -205,29 +198,22 @@ struct StreamingServer(Movable):
         var session_id = self._stream_manager.generate_session_id()
         self._stream_manager.register_stream(stream_id, session_id)
 
-        var close_connection = (not self.tcp_keep_alive) or exchange.connection_close()
         var req_method = exchange.method
         var req_path = exchange.uri.path
 
         # Call the streaming service handler
-        # Handler writes response directly via exchange
         var handler_error: Optional[String] = None
         try:
             handler.call(exchange)
         except e:
             handler_error = String(e)
 
-        logger.debug(
-            req_method,
-            req_path,
-            exchange.response_status_code,
-            "(streaming)"
-        )
+        logger.debug(req_method, req_path, exchange.response_status_code, "(streaming)")
 
         # Clean up the stream
         _ = self._stream_manager.cleanup_stream(stream_id)
 
-        # Connection is automatically managed by SharedConnection reference counting
+        # Handle errors
         if handler_error:
             logger.error("Handler error:", handler_error.value())
             shared_conn.teardown()

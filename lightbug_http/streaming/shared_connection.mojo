@@ -1,4 +1,4 @@
-"""Simple connection wrapper for safe connection sharing."""
+"""Connection wrapper for safe sharing in streaming server."""
 
 from memory import UnsafePointer
 from lightbug_http.connection import TCPConnection
@@ -7,31 +7,26 @@ from memory import Span
 
 
 struct SharedConnection:
-    """Simple wrapper for TCPConnection that allows copying.
-    
-    This provides a simple way to share connection access without
-    complex ownership management.
-    """
+    """Wrapper for TCPConnection that allows safe copying and sharing."""
     var _connection: UnsafePointer[TCPConnection]
     var _owned: Bool
     
     fn __init__(out self, owned conn: TCPConnection):
-        """Create a new shared connection from an owned TCPConnection."""
-        # Store the connection in heap memory
+        """Create a shared connection from an owned TCPConnection."""
         self._connection = UnsafePointer[TCPConnection].alloc(1)
         self._connection.init_pointee_move(conn^)
         self._owned = True
     
     fn __copyinit__(out self, other: SharedConnection):
-        """Copy constructor shares the same connection."""
+        """Copy constructor - shares the same connection."""
         self._connection = other._connection
         self._owned = False  # Only the original owns the connection
     
     fn __moveinit__(out self, owned other: SharedConnection):
-        """Move constructor."""
+        """Move constructor - transfers ownership."""
         self._connection = other._connection
         self._owned = other._owned
-        other._owned = False  # Transfer ownership
+        other._owned = False
     
     fn read(self, mut buffer: Bytes) raises -> Int:
         """Read from the connection."""
