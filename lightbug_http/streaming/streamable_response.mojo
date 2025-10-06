@@ -9,7 +9,7 @@ from lightbug_http.io.bytes import Bytes, bytes, ByteWriter
 from lightbug_http.header import Headers, HeaderKey
 from lightbug_http.cookie import ResponseCookieJar
 from lightbug_http.connection import TCPConnection
-from lightbug_http.mcp.io import StreamableBodyStream
+from lightbug_http.streaming.streamable_body_stream import StreamableBodyStream
 from lightbug_http.strings import strHttp11, lineBreak
 from lightbug_http.external.small_time.small_time import now
 

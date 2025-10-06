@@ -11,7 +11,7 @@ from lightbug_http.cookie import RequestCookieJar
 from lightbug_http.uri import URI
 from lightbug_http.connection import TCPConnection
 from lightbug_http.io.sync import Duration
-from lightbug_http.mcp.io import StreamableBodyStream
+from lightbug_http.streaming.streamable_body_stream import StreamableBodyStream
 from lightbug_http.strings import strHttp11
 
 
@@ -151,7 +151,7 @@ struct StreamableHTTPRequest:
         self.protocol = existing.protocol
         self.body_stream = existing.body_stream^
         self.server_is_tls = existing.server_is_tls
-        self.timeout = existing.timeout^
+        self.timeout = existing.timeout
 
     fn read_body_chunk(mut self) raises -> Bytes:
         """Read the next chunk of the request body.

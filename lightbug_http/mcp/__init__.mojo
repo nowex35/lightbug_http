@@ -19,7 +19,14 @@ from lightbug_http.mcp.tools import create_string_parameter, create_number_param
 # Utility functions
 from lightbug_http.mcp.utils import generate_uuid, generate_connection_id, generate_session_id, current_time_ms
 
-# Streaming HTTP components
-from lightbug_http.mcp.streamable_request import StreamableHTTPRequest
-from lightbug_http.mcp.streamable_response import StreamableHTTPResponse
-from lightbug_http.mcp.io import StreamableBodyStream
+# Streaming HTTP components (moved to lightbug_http.streaming)
+# Kept here for backward compatibility
+from lightbug_http.streaming import (
+    StreamableHTTPRequest,
+    StreamableHTTPResponse,
+    StreamableBodyStream,
+    StreamableHTTPExchange,
+    StreamableHTTPService,
+    StreamingServer,
+    StreamManager,
+)

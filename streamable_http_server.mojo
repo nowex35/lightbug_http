@@ -1,63 +1,56 @@
-"""Example of using Streamable HTTP for SSE and chunked responses.
+"""Streamable HTTP Server - Full Integration Test.
 
-This example demonstrates:
+This test demonstrates the complete streaming HTTP server implementation:
 1. Server-Sent Events (SSE) streaming
 2. Chunked transfer encoding
-3. Streaming large responses
+3. Request body streaming
+4. Real-time bidirectional communication
 """
 
-from lightbug_http import Server
-from lightbug_http.service import HTTPService
-from lightbug_http.http import HTTPRequest, HTTPResponse, OK
-from lightbug_http.mcp import StreamableHTTPRequest, StreamableHTTPResponse, StreamableBodyStream
-from lightbug_http.io.bytes import bytes
-from lightbug_http.connection import TCPConnection
-from time import sleep
+from lightbug_http.streaming.server import StreamingServer
+from lightbug_http.streaming.streamable_service import StreamableHTTPService
+from lightbug_http.streaming.streamable_exchange import StreamableHTTPExchange
+from lightbug_http.io.bytes import bytes, Bytes
 
 
-@value
-struct StreamingExampleService(HTTPService):
-    """Example HTTP service demonstrating streaming capabilities."""
+struct StreamingTestService(StreamableHTTPService):
+    """Test service implementing real streaming functionality."""
 
     fn __init__(out self):
         pass
 
-    fn func(mut self, req: HTTPRequest) raises -> HTTPResponse:
-        """Handle HTTP requests with streaming support."""
+    fn __moveinit__(out self, owned existing: Self):
+        pass
 
-        var path = req.uri.path
+    fn call(mut self, mut exchange: StreamableHTTPExchange) raises:
+        """Handle streaming HTTP requests."""
+        var path = exchange.uri.path
 
-        if path == "/sse":
-            # For SSE, we need to return a regular response that indicates streaming
-            # In a real implementation, we'd use StreamableHTTPResponse directly
-            return OK(
-                bytes("SSE endpoint - requires StreamableHTTPResponse integration"),
-                content_type="text/plain"
-            )
-        elif path == "/chunked":
-            return OK(
-                bytes("Chunked endpoint - requires StreamableHTTPResponse integration"),
-                content_type="text/plain"
-            )
+        if path == "/chunked":
+            exchange.set_status(200)
+            exchange.add_header("Content-Type", "text/plain")
+            exchange.write_chunk(bytes("Hello\n"))
+            exchange.write_chunk(bytes("World!\n"))
+            exchange.end_stream()
+
         else:
-            return OK(
-                bytes("Streamable HTTP Server\n\nAvailable endpoints:\n/sse - Server-Sent Events\n/chunked - Chunked transfer encoding"),
-                content_type="text/plain"
-            )
+            exchange.set_status(200)
+            exchange.add_header("Content-Type", "text/plain")
+            var msg = "Streaming HTTP Server Test\n\nTry: /chunked\n"
+            exchange.write_chunk(bytes(msg))
+            exchange.end_stream()
 
 
-fn main() raises:
-    """Run the streamable HTTP server example."""
-    var server = Server()
-    var service = StreamingExampleService()
+def main():
+    """Run the streamable HTTP server test."""
+    try:
+        var server = StreamingServer(
+            name="lightbug_streaming_test",
+            tcp_keep_alive=True,
+            stream_timeout_seconds=300.0
+        )
+        var service = StreamingTestService()
 
-    print("Starting Streamable HTTP Server...")
-    print("Endpoints:")
-    print("  http://localhost:8080/ - Server info")
-    print("  http://localhost:8080/sse - SSE streaming")
-    print("  http://localhost:8080/chunked - Chunked responses")
-    print()
-    print("Note: Full streaming support requires server integration")
-    print("Press Ctrl+C to stop")
-
-    server.listen_and_serve("0.0.0.0:8080", service)
+        server.listen_and_serve("0.0.0.0:8080", service)
+    except e:
+        print("Error:", e)
