@@ -133,7 +133,7 @@ struct StreamingServer(Movable):
         shared_conn: SharedConnection,
         mut handler: T
     ) raises -> None:
-        """Serve a single streaming connection.
+        """Serve a single streaming connection with keep-alive support.
 
         Parameters:
             T: The type of StreamableHTTPService that handles incoming requests.
@@ -142,9 +142,11 @@ struct StreamingServer(Movable):
             shared_conn: A shared connection object representing a client connection.
             handler: An object that handles incoming streaming HTTP requests.
         """
+        var remote_addr = shared_conn.get_remote_address()
+        print("[CONN] New connection from:", remote_addr)
         logger.debug(
             "Streaming connection accepted! Remote:",
-            shared_conn.get_remote_address()
+            remote_addr
         )
 
         var max_request_uri_length = self._max_request_uri_length
@@ -152,71 +154,99 @@ struct StreamingServer(Movable):
             max_request_uri_length = default_max_request_uri_length
 
         var req_number = 0
-        req_number += 1
 
-        # Read headers
-        var header_buffer = Bytes()
+        # Keep-alive loop: process multiple requests on the same connection
         while True:
-            try:
-                var temp_buffer = Bytes(capacity=default_buffer_size)
-                var bytes_read = shared_conn.read(temp_buffer)
-                logger.debug("Bytes read:", bytes_read)
+            req_number += 1
+            print("[CONN] Request #" + String(req_number) + " on this connection")
 
-                if bytes_read == 0:
+            # Read headers
+            var header_buffer = Bytes()
+            while True:
+                try:
+                    var temp_buffer = Bytes(capacity=default_buffer_size)
+                    var bytes_read = shared_conn.read(temp_buffer)
+                    logger.debug("Bytes read:", bytes_read)
+
+                    if bytes_read == 0:
+                        print("[CONN] Client closed connection (0 bytes read)")
+                        shared_conn.teardown()
+                        return
+
+                    header_buffer.extend(temp_buffer^)
+
+                    if BytesConstant.DOUBLE_CRLF in ByteView(header_buffer):
+                        logger.debug("Found end of headers")
+                        print("[CONN] Headers received, buffer size:", len(header_buffer))
+                        break
+
+                except e:
+                    print("[CONN] Error reading headers:", String(e))
                     shared_conn.teardown()
-                    return
+                    if String(e) == "EOF":
+                        return
+                    else:
+                        logger.error("Failed to read headers:", String(e))
+                        return
 
-                header_buffer.extend(temp_buffer^)
-
-                if BytesConstant.DOUBLE_CRLF in ByteView(header_buffer):
-                    logger.debug("Found end of headers")
-                    break
-
+            # Parse request
+            var exchange: StreamableHTTPExchange
+            try:
+                exchange = StreamableHTTPExchange.from_connection(
+                    shared_conn,
+                    self.address(),
+                    Int(max_request_uri_length),
+                    Span(header_buffer)
+                )
             except e:
+                logger.error("Failed to parse request:", String(e))
                 shared_conn.teardown()
-                if String(e) == "EOF":
-                    return
-                else:
-                    logger.error("Failed to read headers:", String(e))
-                    return
+                return
 
-        # Parse request
-        var exchange: StreamableHTTPExchange
-        try:
-            exchange = StreamableHTTPExchange.from_connection(
-                shared_conn,
-                self.address(),
-                Int(max_request_uri_length),
-                Span(header_buffer)
-            )
-        except e:
-            logger.error("Failed to parse request:", String(e))
-            return
+            # Register the stream
+            var stream_id = self._stream_manager.generate_stream_id()
+            var session_id = self._stream_manager.generate_session_id()
+            self._stream_manager.register_stream(stream_id, session_id)
 
-        # Register the stream
-        var stream_id = self._stream_manager.generate_stream_id()
-        var session_id = self._stream_manager.generate_session_id()
-        self._stream_manager.register_stream(stream_id, session_id)
+            var req_method = exchange.method
+            var req_path = exchange.uri.path
 
-        var req_method = exchange.method
-        var req_path = exchange.uri.path
+            print("[CONN] Request:", req_method, req_path)
 
-        # Call the streaming service handler
-        var handler_error: Optional[String] = None
-        try:
-            handler.call(exchange)
-        except e:
-            handler_error = String(e)
+            # Call the streaming service handler
+            var handler_error: Optional[String] = None
+            try:
+                handler.call(exchange)
+                print("[CONN] Handler completed successfully")
+            except e:
+                handler_error = String(e)
+                print("[CONN] Handler error:", String(e))
 
-        logger.debug(req_method, req_path, exchange.response_status_code, "(streaming)")
+            logger.debug(req_method, req_path, exchange.response_status_code, "(streaming)")
 
-        # Clean up the stream
-        _ = self._stream_manager.cleanup_stream(stream_id)
+            # Clean up the stream
+            _ = self._stream_manager.cleanup_stream(stream_id)
 
-        # Handle errors
-        if handler_error:
-            logger.error("Handler error:", handler_error.value())
-            shared_conn.teardown()
+            # Handle errors and connection close
+            if handler_error:
+                logger.error("Handler error:", handler_error.value())
+                print("[CONN] Closing connection due to handler error")
+                shared_conn.teardown()
+                return  # Exit the keep-alive loop
+
+            # Check if we should close the connection
+            var should_close = False
+            try:
+                should_close = exchange.connection_close()
+            except:
+                pass
+
+            if should_close:
+                print("[CONN] Closing connection (Connection: close header)")
+                shared_conn.teardown()
+                return  # Exit the keep-alive loop
+            else:
+                print("[CONN] Keeping connection alive, waiting for next request...")
 
     fn active_streams(self) -> Int:
         """Get the number of currently active streams.

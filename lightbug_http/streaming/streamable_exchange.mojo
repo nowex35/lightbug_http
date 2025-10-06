@@ -76,7 +76,7 @@ struct StreamableHTTPExchange:
         self._response_headers_sent = False
 
         self._connection = connection  # Copy shared connection
-        self._use_chunked_encoding = True  # Default to chunked for streaming
+        self._use_chunked_encoding = False  # Default to Content-Length, not chunked
         self._content_length = content_length
         self._bytes_read = 0
         self._is_complete = False
@@ -358,11 +358,11 @@ struct StreamableHTTPExchange:
             self.send_headers()
 
         if not self._use_chunked_encoding:
-            # Direct write for SSE
+            # Direct write for Content-Length or SSE
             _ = self._connection.write(Span(data))
             return
 
-        # Chunked encoding: size\r\ndata\r\n
+        # Chunked encoding: size\r\ndata\r\n (only when explicitly enabled)
         var writer = ByteWriter()
         writer.write(hex(len(data)), "\r\n")
         writer.write_bytes(Span(data))

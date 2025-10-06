@@ -142,4 +142,4 @@ fn main() raises:
     print()
 
     # Start server
-    server.listen_and_serve("127.0.0.1:8084", transport)
+    server.listen_and_serve("127.0.0.1:8080", transport)

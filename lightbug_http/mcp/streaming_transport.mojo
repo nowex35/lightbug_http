@@ -70,18 +70,26 @@ struct StreamingTransport(StreamableHTTPService):
         """
         # Only accept POST requests
         if exchange.method != "POST":
+            print("[MCP] Rejecting non-POST method:", exchange.method)
             self._send_error(exchange, 405, "Method not allowed. Use POST")
             return
 
         # Validate Content-Type
         if not self._validate_content_type(exchange):
+            print("[MCP] Invalid Content-Type")
             self._send_error(exchange, 400, "Invalid Content-Type. Expected application/json")
             return
 
         # Validate Origin if required
         if self.require_origin_validation and not self._validate_origin(exchange):
+            print("[MCP] Invalid Origin")
             self._send_error(exchange, 403, "Invalid Origin header")
             return
+
+        print("[MCP] Reading request body...")
+        print("[MCP] Headers:")
+        for entry in exchange.headers._inner.items():
+            print("[MCP]   ", entry.key, ":", entry.value)
 
         # Read request body - handle both chunked and content-length
         var body = Bytes()
@@ -120,35 +128,86 @@ struct StreamingTransport(StreamableHTTPService):
             body_str = ""
 
         if len(body_str) == 0:
+            print("[MCP] Empty request body")
             self._send_error(exchange, 400, "Empty request body")
             return
+
+        print("[MCP] Received body:", len(body_str), "bytes")
+        print("[MCP] Request JSON:", body_str)
 
         # Parse and process MCP message
         var response_json: String
         try:
             response_json = self._process_mcp_message(body_str, exchange)
+            print("[MCP] Response generated:", len(response_json), "bytes")
+            if len(response_json) > 0:
+                print("[MCP] Response JSON:", response_json)
+            else:
+                print("[MCP] Empty response (notification)")
         except e:
+            print("[MCP] Error processing message:", String(e))
             self._send_error(exchange, 500, "Internal server error")
             return
 
         # Send response
+        print("[MCP] Sending response...")
         exchange.set_status(200)
         self._add_cors_headers(exchange)
-        exchange.add_header("Content-Type", "application/json")
 
         # Add session ID to response if we have one
         var session_id = self._extract_session_id(exchange)
         if session_id != "":
             exchange.add_header("Mcp-Session-Id", session_id)
 
-        # Always write something, even if empty (to send headers)
-        if len(response_json) > 0:
-            exchange.write_chunk(bytes(response_json))
-        else:
-            # Write empty response
-            exchange.write_chunk(bytes("{}"))
+        # Determine response mode based on Accept header and content
+        var accept_header = String("")
+        try:
+            if "Accept" in exchange.headers:
+                accept_header = String(exchange.headers["Accept"])
+        except:
+            pass
 
-        exchange.end_stream()
+        var use_sse = False
+        # Check if client accepts SSE and if we need streaming
+        # For now, only use SSE for /sse endpoint or if explicitly needed
+        # Most MCP requests (initialize, tools/list, tools/call) use regular JSON
+
+        if use_sse:
+            # SSE streaming mode
+            exchange.add_header("Content-Type", "text/event-stream")
+            exchange.add_header("Cache-Control", "no-cache")
+            exchange.add_header("Connection", "keep-alive")
+            exchange._use_chunked_encoding = False
+
+            exchange.send_headers()
+
+            # Send response as SSE event
+            if len(response_json) > 0:
+                exchange.write_sse_event("message", response_json)
+
+            # Don't end stream - keep connection open for more events
+            print("[MCP] SSE stream initiated")
+        else:
+            # Regular JSON response with Content-Length
+            exchange.add_header("Content-Type", "application/json")
+
+            var response_body: Bytes
+            if len(response_json) > 0:
+                response_body = bytes(response_json)
+            else:
+                response_body = bytes("{}")
+
+            # Use Content-Length for regular responses (not chunked)
+            exchange.add_header("Content-Length", String(len(response_body)))
+            exchange._use_chunked_encoding = False
+
+            exchange.send_headers()
+            exchange.write_chunk(response_body)
+
+            print("[MCP] Regular JSON response sent:", len(response_body), "bytes")
+            print("[MCP] Response headers:")
+            print("[MCP]   Content-Type: application/json")
+            print("[MCP]   Content-Length:", len(response_body))
 
     fn _handle_health_check(mut self, mut exchange: StreamableHTTPExchange) raises:
         """Handle health check requests.
@@ -158,9 +217,15 @@ struct StreamingTransport(StreamableHTTPService):
         """
         exchange.set_status(200)
         exchange.add_header("Content-Type", "application/json")
+
         var health = bytes('{"status":"healthy","service":"mcp-streaming"}')
+        exchange.add_header("Content-Length", String(len(health)))
+        exchange._use_chunked_encoding = False
+
+        exchange.send_headers()
         exchange.write_chunk(health)
-        exchange.end_stream()
+
+        print("[MCP] Health check response sent")
 
     fn _handle_sse_endpoint(mut self, mut exchange: StreamableHTTPExchange) raises:
         """Handle Server-Sent Events endpoint for streaming updates.
@@ -168,6 +233,8 @@ struct StreamingTransport(StreamableHTTPService):
         Args:
             exchange: The streaming HTTP exchange
         """
+        print("[MCP] Starting SSE stream")
+
         # Start SSE stream
         exchange.start_sse_stream()
 
@@ -177,6 +244,8 @@ struct StreamingTransport(StreamableHTTPService):
         # In a real implementation, this would stream actual MCP events
         # For now, just send a completion event
         exchange.write_sse_event("ready", "Ready for MCP communication", "2")
+
+        print("[MCP] SSE stream established (connection stays open)")
 
     fn _process_mcp_message(mut self, json_body: String, exchange: StreamableHTTPExchange) raises -> String:
         """Process an MCP JSON-RPC message and return the response.
