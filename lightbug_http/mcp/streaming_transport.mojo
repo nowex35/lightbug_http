@@ -50,6 +50,11 @@ struct StreamingTransport(StreamableHTTPService):
         Args:
             exchange: The streaming HTTP exchange containing request and response
         """
+        # Handle OPTIONS requests for CORS preflight
+        if exchange.method == "OPTIONS":
+            self._handle_preflight(exchange)
+            return
+
         var path = exchange.uri.path
 
         # Route to appropriate handler
@@ -62,16 +67,48 @@ struct StreamingTransport(StreamableHTTPService):
         else:
             self._send_error(exchange, 404, "Not Found")
 
+    fn _handle_preflight(mut self, mut exchange: StreamableHTTPExchange) raises:
+        """Handle CORS preflight OPTIONS requests.
+
+        Args:
+            exchange: The streaming HTTP exchange
+        """
+        print("[MCP] Handling OPTIONS preflight request")
+
+        exchange.set_status(204)  # No Content
+        self._add_cors_headers(exchange)
+
+        # Add additional CORS preflight headers
+        exchange.add_header("Access-Control-Max-Age", "86400")  # 24 hours
+        exchange.add_header("Content-Length", "0")
+
+        exchange._use_chunked_encoding = False
+        exchange.send_headers()
+
+        print("[MCP] Preflight response sent")
+
     fn _handle_mcp_request(mut self, mut exchange: StreamableHTTPExchange) raises:
         """Handle MCP JSON-RPC requests.
 
         Args:
             exchange: The streaming HTTP exchange
         """
-        # Only accept POST requests
-        if exchange.method != "POST":
-            print("[MCP] Rejecting non-POST method:", exchange.method)
-            self._send_error(exchange, 405, "Method not allowed. Use POST")
+        # Only accept POST and GET requests
+        if exchange.method != "POST" and exchange.method != "GET":
+            print("[MCP] Rejecting unsupported method:", exchange.method)
+            self._send_error(exchange, 405, "Method not allowed. Use POST or GET")
+            return
+
+        # GET is only for SSE endpoints
+        if exchange.method == "GET":
+            print("[MCP] GET request - routing to SSE handler")
+            self._handle_sse_request(exchange)
+            return
+
+        # Validate Accept header (MCP spec requirement)
+        if not self._validate_accept_header(exchange):
+            print("[MCP] Invalid Accept header")
+            self._send_error(exchange, 406, "Not Acceptable. Client must accept both application/json and text/event-stream")
             return
 
         # Validate Content-Type
@@ -159,21 +196,11 @@ struct StreamingTransport(StreamableHTTPService):
         if session_id != "":
             exchange.add_header("Mcp-Session-Id", session_id)
 
-        # Determine response mode based on Accept header and content
-        var accept_header = String("")
-        try:
-            if "Accept" in exchange.headers:
-                accept_header = String(exchange.headers["Accept"])
-        except:
-            pass
-
-        var use_sse = False
-        # Check if client accepts SSE and if we need streaming
-        # For now, only use SSE for /sse endpoint or if explicitly needed
-        # Most MCP requests (initialize, tools/list, tools/call) use regular JSON
+        # Determine response mode based on request content and Accept header
+        var use_sse = self._should_use_sse(body_str, exchange)
 
         if use_sse:
-            # SSE streaming mode
+            # SSE streaming mode for multiple requests or client preference
             exchange.add_header("Content-Type", "text/event-stream")
             exchange.add_header("Cache-Control", "no-cache")
             exchange.add_header("Connection", "keep-alive")
@@ -227,6 +254,21 @@ struct StreamingTransport(StreamableHTTPService):
 
         print("[MCP] Health check response sent")
 
+    fn _handle_sse_request(mut self, mut exchange: StreamableHTTPExchange) raises:
+        """Handle SSE requests (GET method with optional Last-Event-ID).
+
+        Args:
+            exchange: The streaming HTTP exchange
+        """
+        var last_event_id = self._extract_last_event_id(exchange)
+
+        if last_event_id != "":
+            print("[MCP] SSE reconnection request with Last-Event-ID:", last_event_id)
+            self._handle_sse_resume(exchange, last_event_id)
+        else:
+            print("[MCP] New SSE connection")
+            self._handle_sse_endpoint(exchange)
+
     fn _handle_sse_endpoint(mut self, mut exchange: StreamableHTTPExchange) raises:
         """Handle Server-Sent Events endpoint for streaming updates.
 
@@ -238,7 +280,7 @@ struct StreamingTransport(StreamableHTTPService):
         # Start SSE stream
         exchange.start_sse_stream()
 
-        # Send connection event
+        # Send connection event with ID
         exchange.write_sse_event("connect", "MCP Streaming Transport Connected", "1")
 
         # In a real implementation, this would stream actual MCP events
@@ -246,6 +288,28 @@ struct StreamingTransport(StreamableHTTPService):
         exchange.write_sse_event("ready", "Ready for MCP communication", "2")
 
         print("[MCP] SSE stream established (connection stays open)")
+
+    fn _handle_sse_resume(mut self, mut exchange: StreamableHTTPExchange, last_event_id: String) raises:
+        """Handle SSE reconnection with event replay.
+
+        Args:
+            exchange: The streaming HTTP exchange
+            last_event_id: The last event ID received by client
+        """
+        print("[MCP] Resuming SSE stream from event:", last_event_id)
+
+        # Start SSE stream
+        exchange.start_sse_stream()
+
+        # TODO: Implement event replay from buffer
+        # For now, just send a reconnect event
+        var resume_id = String("resume-") + last_event_id
+        exchange.write_sse_event("reconnect", "SSE stream resumed from " + last_event_id, resume_id)
+
+        # Send ready event
+        exchange.write_sse_event("ready", "Ready for MCP communication", String("resume-") + last_event_id + String("-1"))
+
+        print("[MCP] SSE stream resumed")
 
     fn _process_mcp_message(mut self, json_body: String, exchange: StreamableHTTPExchange) raises -> String:
         """Process an MCP JSON-RPC message and return the response.
@@ -286,6 +350,35 @@ struct StreamingTransport(StreamableHTTPService):
             # Return parse error for invalid JSON-RPC
             var error_response = self._create_error_response("", parse_error())
             return error_response
+
+    fn _validate_accept_header(self, exchange: StreamableHTTPExchange) raises -> Bool:
+        """Validate that the request Accept header includes required MIME types.
+
+        MCP Spec: Client MUST include Accept header with both application/json
+        and text/event-stream.
+
+        Args:
+            exchange: The streaming HTTP exchange
+
+        Returns:
+            True if Accept header contains both required MIME types
+        """
+        if "Accept" not in exchange.headers:
+            # No Accept header - be permissive and allow
+            return True
+
+        var accept = exchange.headers["Accept"]
+        var accept_lower = accept.lower()
+
+        # Check for both required MIME types
+        var has_json = ("application/json" in accept_lower or
+                       "*/*" in accept_lower or
+                       "application/*" in accept_lower)
+        var has_sse = ("text/event-stream" in accept_lower or
+                      "*/*" in accept_lower or
+                      "text/*" in accept_lower)
+
+        return has_json and has_sse
 
     fn _validate_content_type(self, exchange: StreamableHTTPExchange) raises -> Bool:
         """Validate that the request has the correct Content-Type.
@@ -346,6 +439,57 @@ struct StreamingTransport(StreamableHTTPService):
             return session_id
 
         return ""
+
+    fn _extract_last_event_id(self, exchange: StreamableHTTPExchange) raises -> String:
+        """Extract Last-Event-ID from header for SSE resumption.
+
+        Args:
+            exchange: The streaming HTTP exchange
+
+        Returns:
+            The last event ID, or empty string if not present
+        """
+        if "Last-Event-ID" in exchange.headers:
+            var last_event_id = String(exchange.headers["Last-Event-ID"].strip())
+            return last_event_id
+
+        return ""
+
+    fn _should_use_sse(self, request_body: String, exchange: StreamableHTTPExchange) raises -> Bool:
+        """Determine if SSE should be used for the response.
+
+        MCP Spec: Use SSE when request contains multiple JSON-RPC requests,
+        or when client explicitly prefers text/event-stream.
+
+        Args:
+            request_body: The JSON-RPC request body
+            exchange: The streaming HTTP exchange
+
+        Returns:
+            True if SSE should be used
+        """
+        # Check if request body contains JSON array (multiple requests)
+        var trimmed = request_body.strip()
+        if trimmed.startswith("["):
+            # Multiple JSON-RPC requests - use SSE
+            return True
+
+        # Check Accept header preference
+        if "Accept" in exchange.headers:
+            var accept = exchange.headers["Accept"]
+            var accept_lower = accept.lower()
+
+            # If client prefers SSE over JSON (text/event-stream comes first)
+            var sse_pos = accept_lower.find("text/event-stream")
+            var json_pos = accept_lower.find("application/json")
+
+            if sse_pos != -1 and json_pos != -1:
+                if sse_pos < json_pos:
+                    # Client prefers SSE
+                    return True
+
+        # Default to regular JSON
+        return False
 
     fn _add_cors_headers(mut self, mut exchange: StreamableHTTPExchange) raises:
         """Add CORS headers to the response.

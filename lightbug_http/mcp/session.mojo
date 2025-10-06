@@ -26,7 +26,8 @@ struct MCPSession(Movable):
     var last_activity: Int64  # Unix timestamp in milliseconds
     var timeout_duration: Int64  # Session timeout in milliseconds (default: 30 minutes)
     var client_info: String  # JSON string with client information
-    
+    var event_id_counter: Int  # Counter for SSE event IDs
+
     fn __init__(out self, session_id: String, connection_id: String, client_info: String = "{}"):
         self.session_id = session_id
         self.connection_id = connection_id
@@ -35,6 +36,7 @@ struct MCPSession(Movable):
         self.last_activity = current_time_ms()
         self.timeout_duration = 30 * 60 * 1000  # 30 minutes in milliseconds
         self.client_info = client_info
+        self.event_id_counter = 0
     
     fn is_expired(self) -> Bool:
         """Check if the session has expired."""
@@ -48,6 +50,15 @@ struct MCPSession(Movable):
     fn terminate(mut self):
         """Terminate the session."""
         self.state = SESSION_TERMINATED
+
+    fn next_event_id(mut self) -> String:
+        """Generate the next SSE event ID for this session.
+
+        Returns:
+            Event ID in format: {session_id}-{counter}
+        """
+        self.event_id_counter += 1
+        return self.session_id + "-" + String(self.event_id_counter)
 
 @value
 struct SessionManager(Movable):
@@ -166,6 +177,26 @@ struct SessionManager(Movable):
     fn _generate_session_id(self) -> String:
         """Generate a UUID v4 session ID."""
         return generate_session_id()
+
+    fn generate_event_id(mut self, session_id: String) raises -> String:
+        """Generate next SSE event ID for a session.
+
+        Args:
+            session_id: The session ID
+
+        Returns:
+            Event ID in format: {session_id}-{counter}
+
+        Raises:
+            Error if session not found
+        """
+        if session_id not in self.sessions:
+            raise Error("Session not found: " + session_id)
+
+        var session = self.sessions[session_id]
+        var event_id = session.next_event_id()
+        self.sessions[session_id] = session  # Update session with new counter
+        return event_id
 
 # Utility functions
 fn create_session_manager() -> SessionManager:
