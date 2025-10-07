@@ -1,12 +1,6 @@
-"""HTTP transport implementation for MCP.
-
-This module implements the streamable HTTP transport as specified in MCP,
-supporting HTTP POST requests for client-to-server communication.
-"""
-
 from lightbug_http.http import HTTPRequest, HTTPResponse, OK
 from lightbug_http.io.bytes import bytes
-from lightbug_http.mcp.mcp_response import BadRequest, MethodNotAllowed, InternalError
+from lightbug_http.mcp.mcp_common_response import BadRequest, MethodNotAllowed, InternalError
 from lightbug_http.header import Headers, HeaderKey
 from lightbug_http.strings import to_string
 from lightbug_http.io.bytes import Bytes

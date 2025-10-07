@@ -1,10 +1,5 @@
-"""MCP-specific message types and structures.
-
-This module defines the MCP protocol messages that build on top of JSON-RPC 2.0,
-including initialization, capabilities, tools, resources, and prompts.
-"""
-
 from .jsonrpc import JSONRPCRequest, JSONRPCResponse, JSONRPCNotification
+from .utils import current_time_ms
 
 # MCP Protocol Version
 alias MCP_PROTOCOL_VERSION = "2025-06-18"
@@ -168,7 +163,7 @@ struct MCPMessage(Movable):
     fn __init__(out self, request_id: String, method: String, raw_json: String):
         self.request_id = request_id
         self.method = method
-        self.timestamp = 0  # TODO: Get actual timestamp, Pythonのtime.time()を使用
+        self.timestamp = current_time_ms()
         self.raw_json = raw_json
     
     fn is_valid_mcp_message(self) -> Bool:

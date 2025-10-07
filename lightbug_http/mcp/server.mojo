@@ -1,17 +1,15 @@
-"""MCP Server core implementation.
-
-This module provides the main MCPServer class that manages client connections,
-handles the MCP protocol lifecycle, and coordinates with the transport layer.
-"""
-
 from collections import Dict
 from .jsonrpc import JSONRPCRequest, JSONRPCResponse, JSONRPCNotification, JSONRPCError, method_not_found, invalid_params, internal_error, server_not_initialized, unsupported_protocol_version, tool_not_found, tool_execution_failed, feature_not_implemented, log_error
 from .messages import MCPServerInfo, MCPCapabilities, create_initialize_response, MCP_PROTOCOL_VERSION, is_compatible_version
 from .transport import MCPHandler
 from .session import SessionManager, MCPSession
 from .tools import MCPTool, MCPToolResult, MCPToolRegistry, ToolExecutionFunc, create_string_parameter
-from .utils import generate_connection_id
+from .utils import generate_uuid
 from .timeout import TimeoutManager, TimeoutConfig, CancellationNotification, ProgressNotification, create_timeout_error, create_cancellation_error
+from ..streaming.server import StreamingServer
+from .streaming_transport import StreamingTransport
+from ..server import Server
+from .transport import HTTPTransport
 
 # Connection states
 alias ConnectionState = Int
@@ -108,38 +106,39 @@ struct MCPServer(MCPHandler):
 
         self.is_running = False
     
-    fn start(mut self) raises:
-        """Start the MCP server."""
+    fn start(mut self, 
+            address: String = "127.0.0.1:8081",
+            max_concurrent_connections: UInt = 1000,
+            stream_timeout_seconds: Float64 = 300.0
+            ) raises:
+        """Start the MCP server using the streaming backend with configuration."""
         if self.is_running:
             raise Error("Server is already running")
-        
+
+        print("🚀 Starting MCP server on", address)
         self.is_running = True
-        var http_transport = HTTPTransport(self, List[String](), False)
-        var http_server = Server(
-            name=self.server_info.name,
-            address="127.0.0.1",
-            max_concurrent_connections=100
-        )
-        print("MCP endpoint: http://localhost:8081/")
-        print("Example requests:")
-        print("1. Initialize: POST with {'jsonrpc':'2.0','method':'initialize','params':{'protocolVersion':'2025-06-18','clientInfo':{'name':'test','version':'1.0'}},'id':'1'}")
-        print("2. Tools list: POST with {'jsonrpc':'2.0','method':'tools/list','params':{},'id':'2'}")
-        print("3. Echo tool: POST with {'jsonrpc':'2.0','method':'tools/call','params':{'name':'echo','arguments':{'message':'Hello'}},'id':'3'}")
-        print()
-        print("Press Ctrl+C to stop")
+
         try:
-            # Start listening for HTTP requests
-            http_server.listen_and_serve[HTTPTransport]("localhost:8081", http_transport)
+            # 1. Create the streaming transport, passing self as the logic handler.
+            var transport_handler = StreamingTransport(self)
+
+            # 2. Create and run the main streaming server with provided configuration.
+            var server = StreamingServer(
+                name=self.server_info.name,
+                max_concurrent_connections=max_concurrent_connections,
+                stream_timeout_seconds=stream_timeout_seconds
+            )
+            
+            # 3. Listen and serve, blocking until shutdown.
+            server.listen_and_serve(address, transport_handler)
+
         except e:
             print("Server error: " + String(e))
         finally:
             # Cleanup
             print("\nShutting down...")
-            print("Final session count: " + String(self.get_active_session_count()))
-            var cleaned = self.cleanup_expired_sessions()
-            print("Cleaned up " + String(cleaned) + " expired sessions")
             self.stop()
-            print("MCP server stopped")
+            print("MCP server stopped.")
         
     
     fn stop(mut self) raises:
@@ -286,7 +285,7 @@ struct MCPServer(MCPHandler):
         """Handle the initialize request from a client."""
         try:
             # Extract connection ID from request (or generate one)
-            var connection_id = self._generate_connection_id()
+            var connection_id = generate_uuid()
             
             # Parse initialization parameters
             var init_params = self._parse_initialize_params(request.params)
@@ -328,7 +327,7 @@ struct MCPServer(MCPHandler):
         """Handle the initialize request with session management."""
         try:
             # Extract connection ID from request (or generate one)
-            var connection_id = self._generate_connection_id()
+            var connection_id = generate_uuid()
             
             # Parse initialization parameters
             var init_params = self._parse_initialize_params(request.params)
@@ -454,10 +453,6 @@ struct MCPServer(MCPHandler):
     fn _handle_templates_request(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
         """Handle resources/templates/* requests."""
         return self.templates_handler.handle_request(request)
-    
-    fn _generate_connection_id(self) -> String:
-        """Generate a unique connection ID."""
-        return generate_connection_id()
     
     fn _parse_initialize_params(self, params_json: String) raises -> InitializeParams:
         """Parse initialize request parameters."""

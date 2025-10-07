@@ -1,9 +1,3 @@
-"""Model Context Protocol (MCP) implementation for Lightbug HTTP.
-
-This module provides a complete MCP server implementation based on the 2025-06-18 specification,
-including synchronous and asynchronous processing capabilities.
-"""
-
 # Core MCP components
 from lightbug_http.mcp.jsonrpc import JSONRPCRequest, JSONRPCResponse, JSONRPCNotification, JSONRPCError
 from lightbug_http.mcp.server import MCPServer
@@ -18,7 +12,7 @@ from lightbug_http.mcp.tools import MCPTool, MCPToolResult, MCPToolRegistry, MCP
 from lightbug_http.mcp.tools import create_string_parameter, create_number_parameter, create_boolean_parameter, create_enum_parameter
 
 # Utility functions
-from lightbug_http.mcp.utils import generate_uuid, generate_connection_id, generate_session_id, current_time_ms
+from lightbug_http.mcp.utils import generate_uuid, current_time_ms
 
 # Streaming HTTP components (moved to lightbug_http.streaming)
 # Kept here for backward compatibility

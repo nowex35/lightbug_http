@@ -1,15 +1,6 @@
-"""Working MCP server example with Session Management and Tools.
-
-This demonstrates the complete MCP Phase 3 implementation including:
-- Session management with Mcp-Session-Id headers
-- Enhanced Tools functionality with JSON Schema validation
-"""
-
-from lightbug_http import Server
-from lightbug_http.mcp import MCPServer, HTTPTransport, create_session_manager
-from lightbug_http.mcp.tools import MCPTool, MCPToolResult, MCPToolParameter, MCPToolRequest, create_string_parameter,create_number_parameter, TOOL_TYPE_STRING
+from lightbug_http.mcp import MCPServer
+from lightbug_http.mcp.tools import MCPToolResult, MCPToolRequest, create_string_parameter,create_number_parameter
 from lightbug_http.mcp.utils import sleep_seconds
-from collections import Dict
 
 fn example_echo_tool(request: MCPToolRequest) raises -> MCPToolResult:
     var result = MCPToolResult()

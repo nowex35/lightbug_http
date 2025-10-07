@@ -1,9 +1,3 @@
-"""MCP Session Management System.
-
-This module provides session management functionality for MCP servers,
-including session ID generation, state management, and timeout handling.
-"""
-
 from collections import Dict
 from python import Python
 from random import random_si64
@@ -78,7 +72,7 @@ struct SessionManager(Movable):
     
     fn create_session(mut self, connection_id: String, client_info: String = "{}") -> String:
         """Create a new session and return the session ID."""
-        var session_id = self._generate_session_id()
+        var session_id = generate_uuid()
         var session = MCPSession(session_id, connection_id, client_info)
         
         self.sessions[session_id] = session
@@ -174,10 +168,6 @@ struct SessionManager(Movable):
         self.last_cleanup = 0  # Reset to force cleanup
         return self.cleanup_expired_sessions()
     
-    fn _generate_session_id(self) -> String:
-        """Generate a UUID v4 session ID."""
-        return generate_session_id()
-
     fn generate_event_id(mut self, session_id: String) raises -> String:
         """Generate next SSE event ID for a session.
 

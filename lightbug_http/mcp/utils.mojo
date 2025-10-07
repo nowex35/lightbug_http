@@ -1,9 +1,3 @@
-"""Utility functions for MCP implementation.
-
-This module provides common utility functions used across the MCP implementation,
-including UUID generation, time utilities, and other helper functions.
-"""
-
 from random import random_si64
 from python import Python
 
@@ -47,9 +41,7 @@ fn generate_connection_id() -> String:
     """Generate a unique connection ID using UUID format."""
     return generate_uuid()
 
-fn generate_session_id() -> String:
-    """Generate a unique session ID using UUID format."""
-    return generate_uuid()
+
 
 fn current_time_ms() -> Int64:
     """Get current time in milliseconds using Python."""
