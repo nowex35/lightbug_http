@@ -1,9 +1,3 @@
-"""JSON-RPC 2.0 implementation for MCP.
-
-This module implements the JSON-RPC 2.0 specification as required by MCP,
-including Request, Response, Notification, and Error message types.
-"""
-
 from python import Python
 from utils import Variant
 

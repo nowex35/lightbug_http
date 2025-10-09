@@ -547,13 +547,6 @@ struct MCPToolRegistry(Movable):
             self.current_executions -= 1
             var error_result = MCPToolResult(True, "Tool execution failed")
             return error_result
-    
-    fn _execute_with_timeout(self, executor: ToolExecutionFunc, arguments_json: String) raises -> MCPToolResult:
-        """Execute a tool function with timeout protection (legacy)."""
-        # TODO: This is kept for backward compatibility but should be removed
-        # when all tools are migrated to use MCPToolRequest
-        var request = MCPToolRequest("legacy", arguments_json)
-        return executor(request)
 
     fn _execute_with_timeout_request(self, executor: ToolExecutionFunc, request: MCPToolRequest) raises -> MCPToolResult:
         """Execute a tool function with timeout protection using MCPToolRequest."""

@@ -12,6 +12,11 @@ from .jsonrpc import JSONRPCRequest, JSONRPCResponse, JSONRPCNotification, parse
 from .parser import JSONRPCParser, JSONRPCSerializer, MessageType
 from .server import MCPServer
 
+@value
+struct SSEEvent:
+    var id: UInt64
+    var type: String
+    var data: String
 
 @value
 struct StreamingTransport(StreamableHTTPService):
@@ -28,6 +33,9 @@ struct StreamingTransport(StreamableHTTPService):
     var mcp_handler: MCPServer
     var allowed_origins: List[String]
     var require_origin_validation: Bool
+    var _event_buffer: List[SSEEvent]
+    var _next_event_id: UInt64
+    var _buffer_capacity: Int
 
     fn __init__(out self,
                 mcp_handler: MCPServer,
@@ -43,6 +51,36 @@ struct StreamingTransport(StreamableHTTPService):
         self.mcp_handler = mcp_handler
         self.allowed_origins = allowed_origins
         self.require_origin_validation = require_origin_validation
+        self._event_buffer = List[SSEEvent]()
+        self._next_event_id = 1
+        self._buffer_capacity = 1000
+
+    fn _emit_sse_event(mut self, mut exchange: StreamableHTTPExchange, event_type: String, data: String) raises:
+        """Assign an incremental ID, buffer the event, and send via SSE."""
+        var id = self._next_event_id
+        self._next_event_id += 1
+
+        # Append to buffer, enforce capacity (drop oldest when full)
+        self._event_buffer.append(SSEEvent(id, event_type, data))
+        if len(self._event_buffer) > self._buffer_capacity:
+            # Remove oldest (index 0)
+            _ = self._event_buffer.pop(0)
+
+        exchange.write_sse_event(event_type, data, String(id))
+
+    fn _replay_events_since(self, mut exchange: StreamableHTTPExchange, last_event_id: UInt64) raises:
+        """Replay buffered events with id > last_event_id in order."""
+        for e in self._event_buffer:
+            if e.id > last_event_id:
+                exchange.write_sse_event(e.type, e.data, String(e.id))
+
+    fn _parse_event_id(self, s: String) -> UInt64:
+        var result: UInt64 = 0
+        try:
+            result = UInt64(atol(s))
+        except:
+            result = 0
+        return result
 
     fn call(mut self, mut exchange: StreamableHTTPExchange) raises:
         """Handle incoming streaming HTTP requests for MCP transport.
@@ -280,12 +318,12 @@ struct StreamingTransport(StreamableHTTPService):
         # Start SSE stream
         exchange.start_sse_stream()
 
-        # Send connection event with ID
-        exchange.write_sse_event("connect", "MCP Streaming Transport Connected", "1")
+        # Send connection event with ID (buffered)
+        self._emit_sse_event(exchange, "connect", "MCP Streaming Transport Connected")
 
         # In a real implementation, this would stream actual MCP events
         # For now, just send a completion event
-        exchange.write_sse_event("ready", "Ready for MCP communication", "2")
+        self._emit_sse_event(exchange, "ready", "Ready for MCP communication")
 
         print("[MCP] SSE stream established (connection stays open)")
 
@@ -301,13 +339,15 @@ struct StreamingTransport(StreamableHTTPService):
         # Start SSE stream
         exchange.start_sse_stream()
 
-        # TODO: Implement event replay from buffer
-        # For now, just send a reconnect event
-        var resume_id = String("resume-") + last_event_id
-        exchange.write_sse_event("reconnect", "SSE stream resumed from " + last_event_id, resume_id)
+        # Replay buffered events newer than last_event_id
+        var last_id_num = self._parse_event_id(last_event_id)
+        self._replay_events_since(exchange, last_id_num)
+
+        # Send a reconnect marker as a regular event
+        self._emit_sse_event(exchange, "reconnect", "SSE stream resumed from " + last_event_id)
 
         # Send ready event
-        exchange.write_sse_event("ready", "Ready for MCP communication", String("resume-") + last_event_id + String("-1"))
+        self._emit_sse_event(exchange, "ready", "Ready for MCP communication")
 
         print("[MCP] SSE stream resumed")
 
@@ -541,38 +581,3 @@ struct StreamingTransport(StreamableHTTPService):
         """
         var serializer = JSONRPCSerializer()
         return serializer.serialize_error_response(id, error)
-
-
-# Utility functions for streaming transport configuration
-fn create_streaming_transport(handler: MCPServer,
-                              allowed_origins: List[String] = List[String](),
-                              require_origin_validation: Bool = False) -> StreamingTransport:
-    """Create a configured MCP streaming transport.
-
-    Args:
-        handler: The MCP server instance
-        allowed_origins: List of allowed origins for CORS
-        require_origin_validation: Whether to validate Origin header
-
-    Returns:
-        Configured StreamingTransport instance
-    """
-    return StreamingTransport(handler, allowed_origins, require_origin_validation)
-
-
-fn create_localhost_streaming_transport(handler: MCPServer) -> StreamingTransport:
-    """Create an MCP streaming transport that only allows localhost connections.
-
-    Args:
-        handler: The MCP server instance
-
-    Returns:
-        StreamingTransport configured for localhost only
-    """
-    var allowed_origins = List[String]()
-    allowed_origins.append("http://localhost")
-    allowed_origins.append("http://127.0.0.1")
-    allowed_origins.append("https://localhost")
-    allowed_origins.append("https://127.0.0.1")
-
-    return StreamingTransport(handler, allowed_origins, True)

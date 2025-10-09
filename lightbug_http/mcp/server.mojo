@@ -4,7 +4,7 @@ from .messages import MCPServerInfo, MCPCapabilities, create_initialize_response
 from .transport import MCPHandler
 from .session import SessionManager, MCPSession
 from .tools import MCPTool, MCPToolResult, MCPToolRegistry, ToolExecutionFunc, create_string_parameter
-from .utils import generate_uuid
+from .utils import generate_uuid, current_time_ms
 from .timeout import TimeoutManager, TimeoutConfig, CancellationNotification, ProgressNotification, create_timeout_error, create_cancellation_error
 from ..streaming.server import StreamingServer
 from .streaming_transport import StreamingTransport
@@ -29,7 +29,7 @@ struct MCPConnection(Movable):
     var client_name: String
     var client_version: String
     var client_capabilities: MCPCapabilities
-    var session_start_time: Int  # Unix timestamp
+    var session_start_time: Int
     
     fn __init__(out self, connection_id: String):
         self.connection_id = connection_id
@@ -38,7 +38,7 @@ struct MCPConnection(Movable):
         self.client_name = ""
         self.client_version = ""
         self.client_capabilities = MCPCapabilities()
-        self.session_start_time = 0  # TODO: Get actual timestamp
+        self.session_start_time = 0 #current_time_ms()
     
     fn is_initialized(self) -> Bool:
         """Check if the connection has completed initialization."""
@@ -50,15 +50,7 @@ struct MCPConnection(Movable):
 
 @value
 struct MCPServer(MCPHandler):
-    """Main MCP server implementation.
-    
-    This server handles:
-    - Connection lifecycle management
-    - Protocol version negotiation
-    - Capability negotiation
-    - Request routing to appropriate handlers
-    - Session management with timeout monitoring
-    """
+    """Main MCP server implementation."""
     
     var server_info: MCPServerInfo
     var server_capabilities: MCPCapabilities
@@ -77,12 +69,11 @@ struct MCPServer(MCPHandler):
                 server_version: String = "1.0.0",
                 enable_timeouts: Bool = True):
         self.server_info = MCPServerInfo(server_name, server_version)
-        # Enable only tools capability (resources and prompts postponed)
         self.server_capabilities = MCPCapabilities(
             tools=True,
             resources=False,
             prompts=False,
-            logging=True
+            logging=False
         )
         self.connections = Dict[String, MCPConnection]()
         self.session_manager = SessionManager()
@@ -92,7 +83,6 @@ struct MCPServer(MCPHandler):
         self.prompts_handler = PromptsHandler()
         self.templates_handler = TemplatesHandler()
 
-        # Initialize timeout manager with sensible defaults
         if enable_timeouts:
             var default_config = TimeoutConfig(
                 default_timeout_ms=30000,    # 30 seconds default (changed for testing)
@@ -119,17 +109,14 @@ struct MCPServer(MCPHandler):
         self.is_running = True
 
         try:
-            # 1. Create the streaming transport, passing self as the logic handler.
             var transport_handler = StreamingTransport(self)
 
-            # 2. Create and run the main streaming server with provided configuration.
             var server = StreamingServer(
                 name=self.server_info.name,
                 max_concurrent_connections=max_concurrent_connections,
                 stream_timeout_seconds=stream_timeout_seconds
             )
             
-            # 3. Listen and serve, blocking until shutdown.
             server.listen_and_serve(address, transport_handler)
 
         except e:
@@ -204,19 +191,17 @@ struct MCPServer(MCPHandler):
                 var error = method_not_found()
                 response = JSONRPCResponse.error_response(request.id, error)
 
-            # Mark request as completed
             try:
                 self.timeout_manager.complete_request(request.id)
             except:
-                pass  # Continue even if completion tracking fails
+                pass
             return response
 
         except e:
-            # Mark request as completed even if it failed
             try:
                 self.timeout_manager.complete_request(request.id)
             except:
-                pass  # Continue even if completion tracking fails
+                pass
             var error = internal_error()
             log_error(error, "handle_request_failed")
             return JSONRPCResponse.error_response(request.id, error)
@@ -326,44 +311,34 @@ struct MCPServer(MCPHandler):
     fn _handle_initialize_with_session(mut self, request: JSONRPCRequest, session_id: String) raises -> JSONRPCResponse:
         """Handle the initialize request with session management."""
         try:
-            # Extract connection ID from request (or generate one)
             var connection_id = generate_uuid()
             
-            # Parse initialization parameters
             var init_params = self._parse_initialize_params(request.params)
             
-            # Validate protocol version
             if not is_compatible_version(init_params.protocol_version):
                 var error = unsupported_protocol_version(init_params.protocol_version)
                 log_error(error, "initialize_with_session")
                 return JSONRPCResponse.error_response(request.id, error)
             
-            # Create or manage session
             var _ = session_id
             if session_id == "":
-                # No session ID provided, create a new session
                 var client_info = String('{"name":"', init_params.client_name, '","version":"', init_params.client_version, '"}')
                 var _ = self.session_manager.create_session(connection_id, client_info)
             else:
-                # Session ID provided, validate and update
                 try:
                     var session = self.session_manager.get_session(session_id)
                     if session.connection_id != connection_id:
-                        # Associate session with new connection
                         self.session_manager.terminate_session_by_connection(session.connection_id)
                         var client_info = String('{"name":"', init_params.client_name, '","version":"', init_params.client_version, '"}')
                         var _ = self.session_manager.create_session(connection_id, client_info)
                     else:
                         self.session_manager.update_session_activity(session_id)
                 except:
-                    # Invalid session, create new one
                     var client_info = String('{"name":"', init_params.client_name, '","version":"', init_params.client_version, '"}')
                     var _ = self.session_manager.create_session(connection_id, client_info)
             
-            # Validate client capabilities compatibility
             var _ = self._negotiate_capabilities(init_params.client_capabilities)
             
-            # Create new connection
             var connection = MCPConnection(connection_id)
             connection.state = INITIALIZING
             connection.protocol_version = init_params.protocol_version
@@ -371,10 +346,8 @@ struct MCPServer(MCPHandler):
             connection.client_version = init_params.client_version
             connection.client_capabilities = init_params.client_capabilities
             
-            # Store the connection
             self.connections[connection_id] = connection
             
-            # Create initialize response with server capabilities and session ID
             var response = create_initialize_response(
                 request.id,
                 self.server_info,
@@ -390,7 +363,6 @@ struct MCPServer(MCPHandler):
     
     fn _handle_initialized(mut self, notification: JSONRPCNotification) raises:
         """Handle the initialized notification from a client."""
-        # Mark all initializing connections as ready
         for connection_id in self.connections:
             var connection = self.connections[connection_id]
             if connection.state == INITIALIZING:
@@ -403,7 +375,6 @@ struct MCPServer(MCPHandler):
         if request.method == "tools/list":
             var tools = self.tools_registry.list_tools()
             
-            # Build tools array
             var tools_array = String("[")
             var added_count = 0
             
@@ -419,19 +390,15 @@ struct MCPServer(MCPHandler):
             
             tools_array = tools_array + "]"
             
-            # Create proper MCP response format with result object
             var result_json = String('{"tools":' + tools_array + '}')
             var response = JSONRPCResponse.success(request.id, result_json)
             return response
         elif request.method == "tools/call":
             try:
-                # Parse tool name and arguments from request params
                 var tool_info = self._parse_tool_call_params(request.params)
                 
-                # Execute the tool
                 var result = self.tools_registry.execute_tool(tool_info.name, tool_info.arguments)
                 
-                # Return the result
                 return JSONRPCResponse.success(request.id, result.to_json())
                 
             except e:
@@ -459,7 +426,6 @@ struct MCPServer(MCPHandler):
         
         var params = InitializeParams()
         
-        # Extract protocolVersion (handle both single and double quotes)
         var protocol_start = params_json.find("'protocolVersion'")
         if protocol_start == -1:
             protocol_start = params_json.find('"protocolVersion"')
@@ -478,7 +444,6 @@ struct MCPServer(MCPHandler):
                     if protocol_quote_end != -1:
                         params.protocol_version = params_json[protocol_quote_start + 1:protocol_quote_end]
         
-        # Extract clientInfo.name (handle both quote types)
         var client_info_start = params_json.find("'clientInfo'")
         if client_info_start == -1:
             client_info_start = params_json.find('"clientInfo"')
@@ -502,7 +467,6 @@ struct MCPServer(MCPHandler):
                         if name_quote_end != -1:
                             params.client_name = params_json[name_quote_start + 1:name_quote_end]
             
-            # Extract clientInfo.version (handle both quote types)
             var version_start = params_json.find("'version'", client_info_start)
             if version_start == -1:
                 version_start = params_json.find('"version"', client_info_start)
@@ -547,23 +511,17 @@ struct MCPServer(MCPHandler):
         Only features supported by both sides will be enabled.
         """
         var negotiated = MCPCapabilities()
-        
-        # Tools capability negotiation
+
         negotiated.tools = self.server_capabilities.tools and client_capabilities.tools
         
-        # Resources capability negotiation (currently disabled on server side)  
         negotiated.resources = self.server_capabilities.resources and client_capabilities.resources
         
-        # Prompts capability negotiation (currently disabled on server side)
         negotiated.prompts = self.server_capabilities.prompts and client_capabilities.prompts
         
-        # Logging capability negotiation
         negotiated.logging = self.server_capabilities.logging and client_capabilities.logging
         
-        # Roots capability negotiation  
         negotiated.roots = self.server_capabilities.roots and client_capabilities.roots
         
-        # Sampling capability negotiation
         negotiated.sampling = self.server_capabilities.sampling and client_capabilities.sampling
         
         return negotiated
@@ -599,12 +557,9 @@ struct MCPServer(MCPHandler):
     
     fn _parse_tool_call_params(self, params_json: String) raises -> ToolCallParams:
         """Parse tool call parameters from JSON."""
-        # Expected format: {"name": "tool_name", "arguments": {...}}        
-        # Simple JSON parsing for tool call parameters
         var name = String("unknown")
         var arguments = String("{}")
         
-        # Extract tool name - handle both single and double quotes
         var name_start = params_json.find("'name'")
         if name_start == -1:
             name_start = params_json.find('"name"')
@@ -612,7 +567,6 @@ struct MCPServer(MCPHandler):
         if name_start != -1:
             var name_colon = params_json.find(':', name_start)
             if name_colon != -1:
-                # Look for either single or double quote
                 var name_quote_start = params_json.find("'", name_colon)
                 var quote_char = String("'")
                 if name_quote_start == -1:
@@ -624,7 +578,6 @@ struct MCPServer(MCPHandler):
                     if name_quote_end != -1:
                         name = params_json[name_quote_start + 1:name_quote_end]
         
-        # Extract arguments object - handle both single and double quotes
         var args_start = params_json.find("'arguments'")
         if args_start == -1:
             args_start = params_json.find('"arguments"')
@@ -632,10 +585,8 @@ struct MCPServer(MCPHandler):
         if args_start != -1:
             var args_colon = params_json.find(':', args_start)
             if args_colon != -1:
-                # Find the opening brace of the arguments object
                 var args_brace_start = params_json.find('{', args_colon)
                 if args_brace_start != -1:
-                    # Find the matching closing brace
                     var brace_count = 1
                     var pos = args_brace_start + 1
                     var args_end = -1
@@ -652,7 +603,6 @@ struct MCPServer(MCPHandler):
                     
                     if args_end != -1:
                         arguments = params_json[args_brace_start:args_end]
-                        # Convert single quotes to double quotes for valid JSON
                         arguments = arguments.replace("'", '"')
                 
         return ToolCallParams(name, arguments)
@@ -661,33 +611,27 @@ struct MCPServer(MCPHandler):
     fn _handle_progress_notification(mut self, notification: JSONRPCNotification) raises:
         """Handle progress notifications to reset request timeouts."""
         try:
-            # Parse the progress notification to extract request ID
             var request_id = self._extract_request_id_from_progress(notification.params)
             if request_id != "":
                 var success = self.timeout_manager.update_progress(request_id)
                 if success:
                     print("Progress updated for request: ", request_id)
         except:
-            # Log error but don't fail the notification handling
             print("Error handling progress notification")
 
     fn _handle_cancellation_notification(mut self, notification: JSONRPCNotification) raises:
         """Handle explicit cancellation notifications."""
         try:
-            # Parse the cancellation notification to extract request ID
             var request_id = self._extract_request_id_from_cancellation(notification.params)
             if request_id != "":
                 var success = self.timeout_manager.cancel_request(request_id)
                 if success:
                     print("Request explicitly cancelled: ", request_id)
         except:
-            # Log error but don't fail the notification handling
             print("Error handling cancellation notification")
 
     fn _extract_request_id_from_progress(self, params_json: String) -> String:
         """Extract request ID from progress notification params."""
-        # Expected format: {"progressToken": "...", "value": {"requestId": "..."}}
-        # This is a simplified parser - in production, use a proper JSON parser
         var request_id_start = params_json.find('"requestId"')
         if request_id_start == -1:
             return ""
@@ -708,7 +652,6 @@ struct MCPServer(MCPHandler):
 
     fn _extract_request_id_from_cancellation(self, params_json: String) -> String:
         """Extract request ID from cancellation notification params."""
-        # Expected format: {"id": "...", "reason": "..."}
         var id_start = params_json.find('"id"')
         if id_start == -1:
             return ""
@@ -796,7 +739,6 @@ struct ToolsHandler(RequestHandler):
         """Handle tools/list request."""
         var tools = self.tools_registry.list_tools()
         
-        # Build tools array
         var tools_array = String("[")
         var added_count = 0
         
@@ -812,20 +754,16 @@ struct ToolsHandler(RequestHandler):
         
         tools_array = tools_array + "]"
         
-        # Create proper MCP response format with result object
         var result_json = String('{"tools":' + tools_array + '}')
         return JSONRPCResponse.success(request.id, result_json)
     
     fn _handle_tools_call(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
         """Handle tools/call request."""
         try:
-            # Parse tool name and arguments from request params
             var tool_info = self._parse_tool_call_params(request.params)
             
-            # Execute the tool
             var result = self.tools_registry.execute_tool(tool_info.name, tool_info.arguments)
             
-            # Return the result
             return JSONRPCResponse.success(request.id, result.to_json())
             
         except e:
@@ -835,13 +773,10 @@ struct ToolsHandler(RequestHandler):
     
     fn _parse_tool_call_params(self, params_json: String) raises -> ToolCallParams:
         """Parse tool call parameters from JSON."""
-        # Expected format: {"name": "tool_name", "arguments": {...}}
                 
-        # Simple JSON parsing for tool call parameters
         var name = String("unknown")
         var arguments = String("{}")
         
-        # Extract tool name - handle both single and double quotes
         var name_start = params_json.find("'name'")
         if name_start == -1:
             name_start = params_json.find('"name"')
@@ -849,7 +784,6 @@ struct ToolsHandler(RequestHandler):
         if name_start != -1:
             var name_colon = params_json.find(':', name_start)
             if name_colon != -1:
-                # Look for either single or double quote
                 var name_quote_start = params_json.find("'", name_colon)
                 var quote_char = String("'")
                 if name_quote_start == -1:
@@ -862,7 +796,6 @@ struct ToolsHandler(RequestHandler):
                         name = params_json[name_quote_start + 1:name_quote_end]
                         
         
-        # Extract arguments object - handle both single and double quotes
         var args_start = params_json.find("'arguments'")
         if args_start == -1:
             args_start = params_json.find('"arguments"')
@@ -870,10 +803,8 @@ struct ToolsHandler(RequestHandler):
         if args_start != -1:
             var args_colon = params_json.find(':', args_start)
             if args_colon != -1:
-                # Find the opening brace of the arguments object
                 var args_brace_start = params_json.find('{', args_colon)
                 if args_brace_start != -1:
-                    # Find the matching closing brace
                     var brace_count = 1
                     var pos = args_brace_start + 1
                     var args_end = -1
@@ -890,7 +821,6 @@ struct ToolsHandler(RequestHandler):
                     
                     if args_end != -1:
                         arguments = params_json[args_brace_start:args_end]
-                        # Convert single quotes to double quotes for valid JSON
                         arguments = arguments.replace("'", '"')
         
         return ToolCallParams(name, arguments)
@@ -913,7 +843,7 @@ struct ResourcesHandler(RequestHandler):
         pass
     
     fn handle_request(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
-        """Handle resources requests - currently postponed."""
+        """Handle resources requests."""
         var error: JSONRPCError
         
         if request.method == "resources/list":
@@ -935,7 +865,7 @@ struct PromptsHandler(RequestHandler):
         pass
     
     fn handle_request(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
-        """Handle prompts requests - currently postponed."""
+        """Handle prompts requests."""
         var error: JSONRPCError
         
         if request.method == "prompts/list":
@@ -957,7 +887,7 @@ struct TemplatesHandler(RequestHandler):
         pass
     
     fn handle_request(mut self, request: JSONRPCRequest) raises -> JSONRPCResponse:
-        """Handle templates requests - currently postponed."""
+        """Handle templates requests."""
         var error: JSONRPCError
         
         if request.method == "resources/templates/list":

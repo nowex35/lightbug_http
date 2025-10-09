@@ -22,7 +22,7 @@ struct MCPServerInfo(Movable):
     """Information about the MCP server."""
     var name: String
     var version: String
-    
+
     fn __init__(out self, name: String, version: String):
         self.name = name
         self.version = version
@@ -40,9 +40,15 @@ struct MCPCapabilities(Movable):
     var roots: Bool
     var sampling: Bool
     
-    fn __init__(out self, tools: Bool = False, resources: Bool = False, 
-                prompts: Bool = False, logging: Bool = False,
-                roots: Bool = False, sampling: Bool = False):
+    fn __init__(
+        out self, 
+        tools: Bool = False,
+        resources: Bool = False,
+        prompts: Bool = False,
+        logging: Bool = False,
+        roots: Bool = False,
+        sampling: Bool = False
+        ):
         self.tools = tools
         self.resources = resources
         self.prompts = prompts
@@ -86,15 +92,6 @@ struct MCPCapabilities(Movable):
         return json
 
 # MCP-specific message creation functions
-
-fn create_initialize_request(id: String, client_info: MCPClientInfo, 
-                           capabilities: MCPCapabilities) -> JSONRPCRequest:
-    """Create an MCP initialize request."""
-    var params = String('{"protocolVersion":"', MCP_PROTOCOL_VERSION, 
-                       '","capabilities":', capabilities.to_json(),
-                       ',"clientInfo":', client_info.to_json(), '}')
-    return JSONRPCRequest(id, "initialize", params)
-
 fn create_initialize_response(id: String, server_info: MCPServerInfo,
                             capabilities: MCPCapabilities) -> JSONRPCResponse:
     """Create an MCP initialize response."""
@@ -106,33 +103,6 @@ fn create_initialize_response(id: String, server_info: MCPServerInfo,
 fn create_initialized_notification() -> JSONRPCNotification:
     """Create an MCP initialized notification."""
     return JSONRPCNotification("initialized", "{}")
-
-fn create_tools_list_request(id: String) -> JSONRPCRequest:
-    """Create a tools/list request."""
-    return JSONRPCRequest(id, "tools/list", "{}")
-
-fn create_tools_call_request(id: String, tool_name: String, arguments: String) -> JSONRPCRequest:
-    """Create a tools/call request."""
-    var params = String('{"name":"', tool_name, '","arguments":', arguments, '}')
-    return JSONRPCRequest(id, "tools/call", params)
-
-fn create_resources_list_request(id: String) -> JSONRPCRequest:
-    """Create a resources/list request."""
-    return JSONRPCRequest(id, "resources/list", "{}")
-
-fn create_resources_read_request(id: String, uri: String) -> JSONRPCRequest:
-    """Create a resources/read request."""
-    var params = String('{"uri":"', uri, '"}')
-    return JSONRPCRequest(id, "resources/read", params)
-
-fn create_prompts_list_request(id: String) -> JSONRPCRequest:
-    """Create a prompts/list request."""
-    return JSONRPCRequest(id, "prompts/list", "{}")
-
-fn create_prompts_get_request(id: String, name: String, arguments: String = "{}") -> JSONRPCRequest:
-    """Create a prompts/get request."""
-    var params = String('{"name":"', name, '","arguments":', arguments, '}')
-    return JSONRPCRequest(id, "prompts/get", params)
 
 # MCP message validation functions
 
@@ -157,7 +127,7 @@ struct MCPMessage(Movable):
     """Wrapper for MCP messages with metadata."""
     var request_id: String
     var method: String
-    var timestamp: Int  # Unix timestamp
+    var timestamp: Int
     var raw_json: String
     
     fn __init__(out self, request_id: String, method: String, raw_json: String):
