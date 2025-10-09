@@ -108,14 +108,20 @@ fn create_initialized_notification() -> JSONRPCNotification:
 
 fn is_mcp_method(method: String) -> Bool:
     """Check if a method name is a valid MCP method."""
-    return (method == "initialize" or
-            method == "initialized" or
-            method.startswith("tools/") or
-            method.startswith("resources/") or
-            method.startswith("prompts/") or
-            method.startswith("logging/") or
-            method.startswith("roots/") or
-            method.startswith("sampling/"))
+    var mcp_methods = ["initialize", "initialized"]
+    var mcp_prefixes = ["tools/", "resources/", "prompts/", "logging/", "roots/", "sampling/"]
+    
+    # Check exact matches
+    for mcp_method in mcp_methods:
+        if method == mcp_method:
+            return True
+    
+    # Check prefix matches
+    for prefix in mcp_prefixes:
+        if method.startswith(prefix):
+            return True
+    
+    return False
 
 # Protocol version validation
 fn is_compatible_version(version: String) -> Bool:

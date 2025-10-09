@@ -18,9 +18,9 @@ fn example_math_tool(request: MCPToolRequest) raises -> MCPToolResult:
         var b_int = request.get_int("b", 0)
         var sum = a_int + b_int
 
-        result.add_text_content("計算結果: " + String(sum))
+        result.add_text_content("Result: " + String(sum))
     except:
-        result.add_text_content("エラー: 無効な数値が提供されました。'a'と'b'に有効な整数値を提供してください。")
+        result.add_text_content("Error: Invalid values provided. Please provide valid integer values for 'a' and 'b'.")
 
     return result
 
@@ -68,4 +68,4 @@ fn main() raises:
         executor=example_slow_tool
     )
 
-    mcp_server.start()
+    mcp_server.start(address="127.0.0.1:8083")

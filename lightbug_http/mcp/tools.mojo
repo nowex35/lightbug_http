@@ -1,11 +1,6 @@
-"""MCP Tools system implementation.
-
-This module provides the tools system for MCP servers, including tool definitions,
-registration, parameter validation, and execution.
-"""
-
 from collections import Dict, List
 from lightbug_http.mcp.jsonrpc import JSONRPCError
+from .json import add_json_key_value
 
 # Tool input schema types
 alias MCPToolInputType = String
@@ -308,18 +303,19 @@ struct MCPToolContent(Movable):
     
     fn to_json(self) -> String:
         """Convert content to JSON format."""
-        var json = String('{"type":"', escape_json_string(self.type), '"')
+        var json = String('{')
+        json = add_json_key_value(json, "type", escape_json_string(self.type))
 
         if self.type == "text":
-            json = json + ',"text":"' + escape_json_string(self.data) + '"'
+            json = add_json_key_value(json, "text", escape_json_string(self.data))
         elif self.type == "image":
-            json = json + ',"data":"' + escape_json_string(self.data) + '"'
+            json = add_json_key_value(json, "data", escape_json_string(self.data))
             if self.mime_type != "":
-                json = json + ',"mimeType":"' + escape_json_string(self.mime_type) + '"'
+                json = add_json_key_value(json, "mimeType", escape_json_string(self.mime_type))
         elif self.type == "resource":
-            json = json + ',"resource":"' + escape_json_string(self.data) + '"'
+            json = add_json_key_value(json, "resource", escape_json_string(self.data))
             if self.mime_type != "":
-                json = json + ',"mimeType":"' + escape_json_string(self.mime_type) + '"'
+                json = add_json_key_value(json, "mimeType", escape_json_string(self.mime_type))
 
         json = json + "}"
         return json
@@ -574,10 +570,15 @@ fn escape_json_string(value: String) -> String:
         elif ord(char) < 32:
             # Control characters - convert to unicode escape
             var char_code = ord(char)
-            escaped = escaped + '\\u00'
-            if char_code < 16:
-                escaped = escaped + '0'
-            escaped = escaped + String(hex(char_code))
+            escaped = escaped + '\\u'
+            var hex_str = String(hex(char_code))
+            # Remove '0x' prefix if present and pad to 4 digits
+            if hex_str.startswith("0x"):
+                hex_str = hex_str[2:]
+            # Zero-pad to 4 digits
+            while len(hex_str) < 4:
+                hex_str = "0" + hex_str
+            escaped = escaped + hex_str
         else:
             escaped = escaped + char
     return escaped
