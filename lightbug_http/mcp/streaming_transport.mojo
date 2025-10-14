@@ -75,12 +75,10 @@ struct StreamingTransport(StreamableHTTPService):
                 exchange.write_sse_event(e.type, e.data, String(e.id))
 
     fn _parse_event_id(self, s: String) -> UInt64:
-        var result: UInt64 = 0
         try:
-            result = UInt64(atol(s))
+            return UInt64(atol(s))
         except:
-            result = 0
-        return result
+            return 0
 
     fn call(mut self, mut exchange: StreamableHTTPExchange) raises:
         """Handle incoming streaming HTTP requests for MCP transport.
