@@ -1,6 +1,6 @@
 from lightbug_http.mcp import MCPServer
 from lightbug_http.mcp.tools import MCPToolResult, MCPToolRequest, create_string_parameter,create_number_parameter
-from lightbug_http.mcp.utils import sleep_seconds
+from time import sleep
 
 fn example_echo_tool(request: MCPToolRequest) raises -> MCPToolResult:
     var result = MCPToolResult()
@@ -29,15 +29,12 @@ fn example_slow_tool(request: MCPToolRequest) raises -> MCPToolResult:
     var result = MCPToolResult()
 
     # Get the delay parameter
-    var delay_seconds = request.get_int("delay", 5)
+    var delay_seconds: UInt = request.get_int("delay", 5)
 
     result.add_text_content("Starting slow operation for " + String(delay_seconds) + " seconds...")
 
     # Simulate slow work using actual sleep
-    try:
-        sleep_seconds(delay_seconds)
-    except:
-        result.add_text_content("Sleep operation failed - continuing without delay")
+    sleep(delay_seconds)
 
     result.add_text_content("Slow operation completed after " + String(delay_seconds) + " seconds!")
     return result
