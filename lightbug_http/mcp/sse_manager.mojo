@@ -12,11 +12,11 @@ from .utils import current_time_ms
 struct SSEConnection(Movable):
     """Represents an active SSE connection."""
     var session_id: String
-    var created_at: Int64
-    var last_heartbeat: Int64
-    var heartbeat_interval_ms: Int64  # Default: 30 seconds
+    var created_at: Int
+    var last_heartbeat: Int
+    var heartbeat_interval_ms: Int  # Default: 30 seconds
 
-    fn __init__(out self, session_id: String, heartbeat_interval_ms: Int64 = 30000):
+    fn __init__(out self, session_id: String, heartbeat_interval_ms: Int = 30000):
         self.session_id = session_id
         self.created_at = current_time_ms()
         self.last_heartbeat = current_time_ms()
@@ -40,9 +40,9 @@ struct SSEConnection(Movable):
 struct SSEConnectionManager(Movable):
     """Manages active SSE connections and heartbeats."""
     var connections: Dict[String, SSEConnection]  # session_id -> connection
-    var default_heartbeat_interval_ms: Int64
+    var default_heartbeat_interval_ms: Int
 
-    fn __init__(out self, heartbeat_interval_ms: Int64 = 30000):
+    fn __init__(out self, heartbeat_interval_ms: Int = 30000):
         """Initialize SSE connection manager.
 
         Args:

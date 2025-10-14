@@ -3,7 +3,7 @@ from python import Python
 
 fn generate_uuid() -> String:
     """Generate a UUID v4 string in the format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-    
+
     Returns a 36-character UUID string with dashes at positions 8, 13, 18, and 23.
     """
     var result = String()
@@ -43,12 +43,13 @@ fn generate_connection_id() -> String:
 
 
 
-fn current_time_ms() -> Int64:
+fn current_time_ms() -> Int:
     """Get current time in milliseconds using Python."""
     try:
         var time = Python.import_module("time")
+        # nsを取得してミリ秒に変換
         var current_time = time.time()
-        return Int64(Float64(current_time) * 1000)
+        return Int(current_time * 1000)
     except:
         # Fallback to a simple counter if Python fails
         return 1000000
@@ -63,23 +64,27 @@ fn sleep_seconds(seconds: Int) raises:
 
 fn hex(value: Int) -> String:
     """Convert an integer to hexadecimal string.
-    
+
     Args:
         value: The integer value to convert.
-        
+
     Returns:
         Hexadecimal string representation.
     """
     if value == 0:
         return "0"
-    
+
     var result = String("")
     var num = value
     var hex_chars = "0123456789abcdef"
-    
+
     while num > 0:
         var digit = num % 16
         result = hex_chars[digit] + result
         num = num // 16
-    
+
     return result
+
+def main():
+    var time_ms = current_time_ms()
+    print("Current time (ms): " + String(time_ms))
