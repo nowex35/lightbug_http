@@ -3,17 +3,6 @@ from lightbug_http._logger import logger
 
 
 fn delete_zombies() -> None:
-    """Delete zombie processes by reaping terminated child processes.
-
-    This function uses wait4() with the WNOHANG flag to non-blockingly reap
-    any terminated child processes, preventing them from becoming zombies.
-    It continues calling wait4() until no more terminated children exist.
-
-    This should be called periodically in the main server loop to clean up
-    child processes that have finished handling client connections.
-
-    Reference: https://www.coins.tsukuba.ac.jp/~syspro/2024/2024-07-17/index.html
-    """
     while True:
         try:
             # Wait for any child process (-1) with WNOHANG (non-blocking)
