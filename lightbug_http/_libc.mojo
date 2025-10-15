@@ -2125,3 +2125,146 @@ fn get_errno() -> c_int:
     else:
         alias loc = "__error" if os_is_macos() else "__errno_location"
         return external_call[loc, UnsafePointer[c_int]]()[]
+
+
+# --- ( Process Related Types and Constants )-----------------------------------
+alias pid_t = c_int
+
+# wait4 options
+alias WNOHANG = 1
+"""Do not block if no child has exited."""
+
+
+# --- ( Process Related Syscalls )----------------------------------------------
+
+fn _fork() -> pid_t:
+    """Libc POSIX `fork` function.
+
+    Returns:
+        In the child process, 0 is returned. In the parent process, the PID of the child is returned.
+        On failure, -1 is returned.
+
+    #### C Function
+    ```c
+    pid_t fork(void)
+    ```
+
+    #### Notes:
+    * Reference: https://man7.org/linux/man-pages/man2/fork.2.html .
+    """
+    return external_call["fork", pid_t]()
+
+
+fn fork() raises -> pid_t:
+    """Libc POSIX `fork` function. Creates a new process by duplicating the calling process.
+
+    Returns:
+        In the child process, 0 is returned. In the parent process, the PID of the child is returned.
+
+    Raises:
+        Error: If an error occurs while forking.
+        EAGAIN: Cannot allocate sufficient memory to copy the parent's page tables and allocate a task structure for the child.
+        ENOMEM: Failed to allocate the necessary kernel structures because memory is tight.
+
+    #### C Function
+    ```c
+    pid_t fork(void)
+    ```
+
+    #### Notes:
+    * Reference: https://man7.org/linux/man-pages/man2/fork.2.html .
+    """
+    var result = _fork()
+    if result == -1:
+        var errno = get_errno()
+        if errno == EAGAIN:
+            raise Error(
+                "fork: Cannot allocate sufficient memory to copy the parent's page tables and allocate a task structure"
+                " for the child."
+            )
+        elif errno == ENOMEM:
+            raise Error("fork: Failed to allocate the necessary kernel structures because memory is tight.")
+        else:
+            raise Error("fork: An error occurred while forking. Error code: " + String(errno))
+    return result
+
+
+fn _wait4[
+    origin: Origin
+](pid: pid_t, status: Pointer[c_int, origin], options: c_int, rusage: UnsafePointer[c_void]) -> pid_t:
+    """Libc POSIX `wait4` function.
+
+    Args:
+        pid: The process ID to wait for. -1 means wait for any child process.
+        status: A pointer to store the exit status of the child process.
+        options: Options for waiting (e.g., WNOHANG for non-blocking).
+        rusage: A pointer to store resource usage information (can be NULL).
+
+    Returns:
+        The PID of the terminated child process, 0 if WNOHANG was specified and no child has exited, or -1 on error.
+
+    #### C Function
+    ```c
+    pid_t wait4(pid_t pid, int *status, int options, struct rusage *rusage)
+    ```
+
+    #### Notes:
+    * Reference: https://man7.org/linux/man-pages/man2/wait4.2.html .
+    """
+    return external_call["wait4", pid_t, pid_t, Pointer[c_int, origin], c_int, UnsafePointer[c_void]](
+        pid, status, options, rusage
+    )
+
+
+fn wait4(pid: pid_t, options: c_int) raises -> pid_t:
+    """Libc POSIX `wait4` function. Waits for a child process to change state.
+
+    Args:
+        pid: The process ID to wait for. -1 means wait for any child process.
+        options: Options for waiting (e.g., WNOHANG for non-blocking).
+
+    Returns:
+        The PID of the terminated child process, or 0 if WNOHANG was specified and no child has exited.
+
+    Raises:
+        Error: If an error occurs while waiting (except ECHILD which returns 0).
+        EINTR: The call was interrupted by a signal.
+
+    #### C Function
+    ```c
+    pid_t wait4(pid_t pid, int *status, int options, struct rusage *rusage)
+    ```
+
+    #### Notes:
+    * Reference: https://man7.org/linux/man-pages/man2/wait4.2.html .
+    """
+    var status: c_int = 0
+    var result = _wait4(pid, Pointer(to=status), options, UnsafePointer[c_void]())
+    if result == -1:
+        var errno = get_errno()
+        if errno == ECHILD:
+            # No child processes exist - this is normal
+            return 0
+        elif errno == EINTR:
+            raise Error("wait4: The call was interrupted by a signal.")
+        else:
+            raise Error("wait4: An error occurred while waiting. Error code: " + String(errno))
+    return result
+
+
+fn exit(status: c_int):
+    """Libc POSIX `exit` function. Terminates the calling process.
+
+    Args:
+        status: The exit status. Conventionally, 0 indicates success and non-zero indicates failure.
+
+    #### C Function
+    ```c
+    void exit(int status)
+    ```
+
+    #### Notes:
+    * Reference: https://man7.org/linux/man-pages/man3/exit.3.html .
+    * This function does not return.
+    """
+    _ = external_call["exit", c_void, c_int](status)
