@@ -2268,3 +2268,132 @@ fn exit(status: c_int):
     * This function does not return.
     """
     _ = external_call["exit", c_void, c_int](status)
+
+
+# Signal constants
+alias SIGTERM: c_int = 15
+"""Termination signal (polite termination request)."""
+alias SIGKILL: c_int = 9
+"""Kill signal (forceful termination, cannot be caught)."""
+
+
+fn kill(pid: pid_t, sig: c_int) raises -> c_int:
+    """Libc POSIX `kill` function. Send a signal to a process.
+
+    Args:
+        pid: The process ID to send the signal to.
+        sig: The signal number to send.
+
+    Returns:
+        0 on success, -1 on error.
+
+    #### C Function
+    ```c
+    int kill(pid_t pid, int sig)
+    ```
+
+    #### Notes:
+    * Reference: https://man7.org/linux/man-pages/man2/kill.2.html .
+    """
+    var result = external_call["kill", c_int, pid_t, c_int](pid, sig)
+    if result == -1:
+        var errno = get_errno()
+        if errno == ESRCH:
+            raise Error("kill: No such process (PID: " + String(pid) + ")")
+        elif errno == EPERM:
+            raise Error("kill: Permission denied (PID: " + String(pid) + ")")
+        elif errno == EINVAL:
+            raise Error("kill: Invalid signal: " + String(sig))
+        else:
+            raise Error("kill: Error occurred. Error code: " + String(errno))
+    return result
+
+
+fn waitpid(pid: pid_t, status: UnsafePointer[c_int], options: c_int) -> pid_t:
+    """Libc POSIX `waitpid` function. Wait for process to change state.
+
+    Args:
+        pid: Process ID to wait for (-1 means any child).
+        status: Pointer to store the exit status.
+        options: Options (e.g., WNOHANG for non-blocking).
+
+    Returns:
+        The process ID of the child that changed state, 0 if WNOHANG was used and no child has exited, or -1 on error.
+
+    #### C Function
+    ```c
+    pid_t waitpid(pid_t pid, int *status, int options)
+    ```
+
+    #### Notes:
+    * Reference: https://man7.org/linux/man-pages/man2/waitpid.2.html .
+    """
+    return external_call["waitpid", pid_t, pid_t, UnsafePointer[c_int], c_int](pid, status, options)
+
+
+fn pipe(pipefd: UnsafePointer[c_int]) raises -> c_int:
+    """Libc POSIX `pipe` function. Create a pipe for inter-process communication.
+
+    Args:
+        pipefd: Pointer to array of 2 integers to store file descriptors.
+                pipefd[0] is the read end, pipefd[1] is the write end.
+
+    Returns:
+        0 on success, -1 on error.
+
+    #### C Function
+    ```c
+    int pipe(int pipefd[2])
+    ```
+
+    #### Notes:
+    * Reference: https://man7.org/linux/man-pages/man2/pipe.2.html .
+    """
+    var result = external_call["pipe", c_int, UnsafePointer[c_int]](pipefd)
+    if result == -1:
+        raise Error("pipe() failed")
+    return result
+
+
+fn read_fd(fd: c_int, buf: UnsafePointer[UInt8], count: c_size_t) -> c_ssize_t:
+    """Libc POSIX `read` function. Read from a file descriptor.
+
+    Args:
+        fd: File descriptor to read from.
+        buf: Buffer to store read data.
+        count: Maximum number of bytes to read.
+
+    Returns:
+        Number of bytes read on success, -1 on error, 0 on EOF.
+
+    #### C Function
+    ```c
+    ssize_t read(int fd, void *buf, size_t count)
+    ```
+
+    #### Notes:
+    * Reference: https://man7.org/linux/man-pages/man2/read.2.html .
+    """
+    return external_call["read", c_ssize_t, c_int, UnsafePointer[UInt8], c_size_t](fd, buf, count)
+
+
+fn write_fd(fd: c_int, buf: UnsafePointer[UInt8], count: c_size_t) -> c_ssize_t:
+    """Libc POSIX `write` function. Write to a file descriptor.
+
+    Args:
+        fd: File descriptor to write to.
+        buf: Buffer containing data to write.
+        count: Number of bytes to write.
+
+    Returns:
+        Number of bytes written on success, -1 on error.
+
+    #### C Function
+    ```c
+    ssize_t write(int fd, const void *buf, size_t count)
+    ```
+
+    #### Notes:
+    * Reference: https://man7.org/linux/man-pages/man2/write.2.html .
+    """
+    return external_call["write", c_ssize_t, c_int, UnsafePointer[UInt8], c_size_t](fd, buf, count)

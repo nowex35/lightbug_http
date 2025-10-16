@@ -175,7 +175,7 @@ struct TimeoutManager(Movable):
 
         return expired_ids
 
-    fn get_pending_request_count(self) -> Int:
+    fn get_pending_request_count(self) raises -> Int:
         """Get the number of pending (non-cancelled) requests."""
         var count = 0
         for request_id in self.pending_requests:
@@ -188,7 +188,7 @@ struct TimeoutManager(Movable):
         """Get the number of cancelled requests."""
         return len(self.cancelled_requests)
 
-    fn cleanup_completed_requests(mut self):
+    fn cleanup_completed_requests(mut self) raises -> None:
         """Remove old completed/cancelled requests from memory."""
         var current_time_ms = Int(current_time_ms())
         var cleanup_threshold_ms = 300000  # 5 minutes

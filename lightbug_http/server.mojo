@@ -10,8 +10,6 @@ from lightbug_http.uri import URI
 from lightbug_http.header import Headers
 from lightbug_http.service import HTTPService
 from lightbug_http.error import ErrorHandler
-from lightbug_http.process import delete_zombies
-from lightbug_http._libc import fork, exit, pid_t
 
 
 alias DefaultConcurrency: Int = 256 * 1024
@@ -109,10 +107,7 @@ struct Server(Movable):
         self.serve(listener^, handler)
 
     fn serve[T: HTTPService](mut self, owned ln: NoTLSListener, mut handler: T) raises:
-        """Serve HTTP requests with fork-based parallel processing.
-
-        Each incoming connection is handled by a separate child process created via fork().
-        This allows multiple clients to be served concurrently.
+        """Serve HTTP requests.
 
         Parameters:
             T: The type of HTTPService that handles incoming requests.
@@ -125,54 +120,10 @@ struct Server(Movable):
             If there is an error while serving requests.
         """
         while True:
-            # ===元のコード===
-            # var conn = ln.accept()
-            # self.serve_connection(conn, handler)
-
-            # ===forkを使うコード===
-            # Periodically reap zombie child processes
-            delete_zombies()
-
-            # Accept a new connection
             var conn = ln.accept()
+            self.serve_connection(conn, handler)
 
-            # Fork a child process to handle the connection
-            var pid: pid_t
-            try:
-                pid = fork()
-            except e:
-                logger.error("Fork failed:", String(e))
-                try:
-                    conn.close()
-                except:
-                    pass
-                continue
 
-            if pid == 0:
-                # Child process: handle client connection
-                try:
-                    # Close the listening socket (not needed in child)
-                    try:
-                        ln.close()
-                    except:
-                        pass
-
-                    # Process the client request
-                    self.serve_connection(conn, handler)
-
-                    # Exit successfully
-                    exit(0)
-                except e:
-                    logger.error("Child process error:", String(e))
-                    # Exit with error status
-                    exit(1)
-            elif pid > 0:
-                # Parent process: continue accepting connections
-                try:
-                    # Close the client socket (child process will use it)
-                    conn.close()
-                except e:
-                    logger.error("Failed to close connection in parent:", String(e))
 
     fn serve_connection[T: HTTPService](mut self, mut conn: TCPConnection, mut handler: T) raises -> None:
         """Serve a single connection.

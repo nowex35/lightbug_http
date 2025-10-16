@@ -17,6 +17,8 @@ from lightbug_http.streaming.streamable_service import StreamableHTTPService
 from lightbug_http.streaming.stream_manager import StreamManager
 from lightbug_http.streaming.shared_connection import SharedConnection
 from lightbug_http.error import ErrorHandler
+from lightbug_http.process import delete_zombies
+from lightbug_http._libc import fork, exit, pid_t, kill, waitpid, SIGKILL, WNOHANG
 
 
 alias default_max_request_body_size = 4 * 1024 * 1024  # 4MB
@@ -117,16 +119,55 @@ struct StreamingServer(Movable):
             handler: An object that handles incoming streaming HTTP requests.
         """
         while True:
+            # Periodically reap zombie child processes
+            delete_zombies()
+
+            # Accept a new connection
             var conn = ln.accept()
             var shared_conn = SharedConnection(conn^)
-            
-            try:
-                self.serve_connection(shared_conn, handler)
-            except e:
-                logger.error("Error serving connection:", String(e))
-                shared_conn.teardown()
 
-            _ = self._stream_manager.cleanup_idle_streams()
+            # Fork a child process to handle the connection
+            var pid: pid_t
+            try:
+                pid = fork()
+            except e:
+                logger.error("Fork failed:", String(e))
+                print("[StreamingServer] Fork failed:", String(e))
+                try:
+                    shared_conn.teardown()
+                except:
+                    pass
+                continue
+
+            if pid == 0:
+                # Child process: handle client connection
+                try:
+                    # Close the listening socket (not needed in child)
+                    try:
+                        ln.close()
+                    except:
+                        pass
+
+                    # Process the client request
+                    self.serve_connection(shared_conn, handler)
+
+                    # Exit successfully
+                    exit(0)
+                except e:
+                    logger.error("Child process error:", String(e))
+                    print("[StreamingServer] Child process error:", String(e))
+                    # Exit with error status
+                    exit(1)
+            elif pid > 0:
+                # Parent process: continue accepting connections
+                try:
+                    # Close the client socket (child process will use it)
+                    shared_conn.teardown()
+                except e:
+                    logger.error("Failed to close connection in parent:", String(e))
+
+                # Clean up idle streams periodically
+                _ = self._stream_manager.cleanup_idle_streams()
 
     fn serve_connection[T: StreamableHTTPService](
         mut self,

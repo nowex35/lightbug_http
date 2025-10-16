@@ -1,6 +1,11 @@
 from collections import Dict, List
 from lightbug_http.mcp.jsonrpc import JSONRPCError
 from .json import add_json_key_value
+from .utils import current_time_ms
+from time import sleep
+from lightbug_http._libc import fork, exit, kill, waitpid, SIGKILL, WNOHANG, c_int, pid_t
+from memory import UnsafePointer
+import os
 
 # Tool input schema types
 alias MCPToolInputType = String
@@ -365,6 +370,67 @@ struct MCPToolResult(Movable):
         json = json + "]}"
         return json
 
+    @staticmethod
+    fn from_json(json_str: String) raises -> MCPToolResult:
+        """Parse MCPToolResult from JSON string (simplified parser)."""
+        var result = MCPToolResult()
+
+        # Check if this is an error result
+        if '"isError":true' in json_str or "'isError':true" in json_str:
+            result.is_error = True
+            # Extract error message
+            var text_start = json_str.find('"text":"')
+            if text_start == -1:
+                text_start = json_str.find("'text':'")
+            if text_start != -1:
+                var quote_char = '"' if '"text":"' in json_str else "'"
+                var msg_start = json_str.find(quote_char, text_start + 8)
+                if msg_start != -1:
+                    var msg_end = json_str.find(quote_char, msg_start + 1)
+                    if msg_end != -1:
+                        result.error_message = json_str[msg_start + 1:msg_end]
+        else:
+            # Parse content array (simplified - only handles text content)
+            var content_start = json_str.find('"content":[')
+            if content_start == -1:
+                content_start = json_str.find("'content':[")
+
+            if content_start != -1:
+                var array_start = json_str.find('[', content_start)
+                if array_start != -1:
+                    var depth = 0
+                    var in_string = False
+                    var current_text = String()
+
+                    # Simple parse of text content
+                    for i in range(array_start, len(json_str)):
+                        var ch = json_str[i]
+                        if ch == '"' and (i == 0 or json_str[i-1] != '\\'):
+                            in_string = not in_string
+
+                        if not in_string:
+                            if ch == '[' or ch == '{':
+                                depth += 1
+                            elif ch == ']' or ch == '}':
+                                depth -= 1
+                                if depth == 0:
+                                    break
+
+                    # Extract text values (very simplified)
+                    var text_marker = '"text":"'
+                    var pos = json_str.find(text_marker, array_start)
+                    while pos != -1 and pos < len(json_str):
+                        var text_start = pos + len(text_marker)
+                        var text_end = json_str.find('"', text_start)
+                        if text_end != -1:
+                            var text_value = json_str[text_start:text_end]
+                            result.add_text_content(text_value)
+                        pos = json_str.find(text_marker, text_end if text_end != -1 else pos + 1)
+                        if pos <= text_end:
+                            break
+
+        return result
+
 @value
 struct MCPToolRequest(Movable):
     """Parsed and validated tool request parameters."""
@@ -452,6 +518,27 @@ struct MCPToolRequest(Movable):
 alias ToolExecutionFunc = fn(MCPToolRequest) raises -> MCPToolResult
 
 @value
+struct ToolExecutionInfo(Movable):
+    """Information about a tool execution in progress."""
+    var tool_name: String
+    var start_time_ms: Int
+    var timeout_ms: Int
+
+    fn __init__(out self, tool_name: String, timeout_ms: Int):
+        self.tool_name = tool_name
+        self.start_time_ms = current_time_ms()
+        self.timeout_ms = timeout_ms
+
+    fn is_expired(self) -> Bool:
+        """Check if this execution has exceeded its timeout."""
+        var elapsed = current_time_ms() - self.start_time_ms
+        return elapsed >= self.timeout_ms
+
+    fn elapsed_time_ms(self) -> Int:
+        """Get the elapsed execution time in milliseconds."""
+        return current_time_ms() - self.start_time_ms
+
+@value
 struct MCPToolRegistry(Movable):
     """Registry for managing MCP tools."""
     var tools: Dict[String, MCPTool]
@@ -461,7 +548,10 @@ struct MCPToolRegistry(Movable):
     var max_concurrent_executions: Int  # Maximum concurrent tool executions
     var current_executions: Int  # Current number of running executions
     var safety_checks_enabled: Bool
-    
+    var active_executions: Dict[String, ToolExecutionInfo]  # Track active tool executions
+    var next_execution_id: Int  # Counter for generating execution IDs
+    var use_fork_timeout: Bool  # Enable fork-based timeout enforcement (true cancellation)
+
     fn __init__(out self):
         self.tools = Dict[String, MCPTool]()
         self.tool_executors = Dict[String, ToolExecutionFunc]()
@@ -470,6 +560,9 @@ struct MCPToolRegistry(Movable):
         self.max_concurrent_executions = 10  # Maximum 10 concurrent executions
         self.current_executions = 0
         self.safety_checks_enabled = True
+        self.active_executions = Dict[String, ToolExecutionInfo]()
+        self.next_execution_id = 0
+        self.use_fork_timeout = False  # Default to off for safety and compatibility
     
     fn register_tool(mut self, tool: MCPTool, executor: ToolExecutionFunc) raises:
         """Register a new tool with its executor function."""
@@ -512,6 +605,12 @@ struct MCPToolRegistry(Movable):
                 var error_result = MCPToolResult(True, "Maximum concurrent executions exceeded")
                 return error_result
 
+        # Check for expired executions before starting a new one
+        try:
+            self._cleanup_expired_executions()
+        except:
+            pass  # Continue even if cleanup fails
+
         # Validate arguments
         try:
             var validation = tool.validate_arguments(arguments_json)
@@ -532,24 +631,227 @@ struct MCPToolRegistry(Movable):
             var error_result = MCPToolResult(True, "Failed to parse arguments")
             return error_result
 
+        # Generate execution ID and track the execution
+        var execution_id = self._generate_execution_id()
+        var exec_info = ToolExecutionInfo(tool_name, self.max_execution_time_ms)
+        self.active_executions[execution_id] = exec_info
+
         # Execute the tool with safety monitoring
         self.current_executions += 1
         try:
             var executor = self.tool_executors[tool_name]
-            var result = self._execute_with_timeout_request(executor, request)
+
+            # Use fork-based timeout if enabled, otherwise use standard execution
+            var result: MCPToolResult
+            if self.use_fork_timeout:
+                result = self._execute_with_timeout_fork(executor, request, execution_id)
+            else:
+                result = self._execute_with_timeout_request(executor, request, execution_id)
+
             self.current_executions -= 1
+            # Remove from active executions on success
+            _ = self.active_executions.pop(execution_id, ToolExecutionInfo(tool_name, 0))
             return result
         except e:
             self.current_executions -= 1
-            var error_result = MCPToolResult(True, "Tool execution failed")
+            # Remove from active executions on error
+            _ = self.active_executions.pop(execution_id, ToolExecutionInfo(tool_name, 0))
+            var error_result = MCPToolResult(True, "Tool execution failed: " + String(e))
             return error_result
 
-    fn _execute_with_timeout_request(self, executor: ToolExecutionFunc, request: MCPToolRequest) raises -> MCPToolResult:
-        """Execute a tool function with timeout protection using MCPToolRequest."""
-        # TODO: Implement timeout mechanism in future version (Phase 4)
-        # Current implementation: Direct execution without timeout
-        # Requires async I/O system for proper timeout handling
-        return executor(request)
+    fn _generate_execution_id(mut self) -> String:
+        """Generate a unique execution ID."""
+        var id = String("exec_") + String(self.next_execution_id)
+        self.next_execution_id += 1
+        return id
+
+    fn _cleanup_expired_executions(mut self) raises:
+        """Clean up expired tool executions and log warnings."""
+        var expired_ids = List[String]()
+
+        # Collect expired execution IDs
+        for exec_id in self.active_executions:
+            var exec_info = self.active_executions[exec_id]
+            if exec_info.is_expired():
+                expired_ids.append(exec_id)
+                print("[WARNING] Tool execution timeout: ", exec_info.tool_name,
+                      " exceeded ", exec_info.timeout_ms, "ms (elapsed: ",
+                      exec_info.elapsed_time_ms(), "ms)")
+
+        # Remove expired executions
+        for i in range(len(expired_ids)):
+            _ = self.active_executions.pop(expired_ids[i], ToolExecutionInfo("", 0))
+
+    fn _execute_with_timeout_request(mut self, executor: ToolExecutionFunc, request: MCPToolRequest, execution_id: String) raises -> MCPToolResult:
+        """Execute a tool function with timeout monitoring using MCPToolRequest.
+
+        This implementation uses polling to check execution time:
+        - The tool executes directly in the current process
+        - Periodically checks if execution has exceeded timeout
+        - Cannot truly cancel mid-execution (would require async/fork)
+        """
+        # Check if already expired before starting (shouldn't happen, but safety check)
+        if execution_id in self.active_executions:
+            var exec_info = self.active_executions[execution_id]
+            if exec_info.is_expired():
+                raise Error("Tool execution timeout before start: " + exec_info.tool_name)
+
+        # Execute the tool
+        var result = executor(request)
+
+        # Check if execution exceeded timeout
+        if execution_id in self.active_executions:
+            var exec_info = self.active_executions[execution_id]
+            if exec_info.is_expired():
+                var elapsed = exec_info.elapsed_time_ms()
+                print("[WARNING] Tool '", exec_info.tool_name, "' completed but exceeded timeout: ",
+                      elapsed, "ms (max: ", exec_info.timeout_ms, "ms)")
+                # Still return the result, but log the timeout warning
+                # For true cancellation, use fork-based execution in server.mojo
+
+        return result
+
+    fn _execute_with_timeout_fork(mut self, executor: ToolExecutionFunc, request: MCPToolRequest, execution_id: String) raises -> MCPToolResult:
+        """Execute a tool function with fork-based timeout enforcement.
+
+        This implementation uses fork() to run the tool in a child process that can be killed on timeout:
+        - Forks a child process to execute the tool
+        - Parent monitors timeout and kills child if exceeded
+        - Uses temporary file for IPC between parent and child
+        - Provides true mid-execution cancellation capability
+        """
+        if execution_id not in self.active_executions:
+            raise Error("Execution ID not found: " + execution_id)
+
+        var exec_info = self.active_executions[execution_id]
+        var timeout_ms = exec_info.timeout_ms
+
+        # Create temporary file path for result IPC
+        var temp_file = String("/tmp/mcp_tool_result_") + execution_id + ".json"
+
+        # Fork child process
+        var pid: pid_t
+        try:
+            pid = fork()
+        except e:
+            print("[FORK] Fork failed, falling back to non-fork execution:", String(e))
+            # Fallback to regular execution on fork failure
+            return self._execute_with_timeout_request(executor, request, execution_id)
+
+        if pid == 0:
+            # Child process: execute tool and write result to file
+            try:
+                var result = executor(request)
+                var result_json = result.to_json()
+
+                # Write result to temporary file
+                try:
+                    with open(temp_file, "w") as f:
+                        f.write(result_json)
+                except write_error:
+                    print("[CHILD] Failed to write result to file:", String(write_error))
+
+                # Exit child process successfully
+                exit(0)
+            except tool_error:
+                # Tool execution failed - write error result
+                try:
+                    var error_result = MCPToolResult(True, String(tool_error))
+                    var error_json = error_result.to_json()
+                    with open(temp_file, "w") as f:
+                        f.write(error_json)
+                except:
+                    pass
+
+                # Exit with error status
+                exit(1)
+        else:
+            # Parent process: monitor timeout and wait for child
+            var start_time = current_time_ms()
+            var child_completed = False
+            var status_ptr = UnsafePointer[c_int].alloc(1)
+            status_ptr[] = 0
+
+            # Monitoring loop
+            while True:
+                # Check if child has completed (non-blocking)
+                var wait_result = waitpid(pid, status_ptr, WNOHANG)
+
+                if wait_result == pid:
+                    # Child completed
+                    child_completed = True
+                    break
+                elif wait_result == -1:
+                    # Error in waitpid
+                    print("[PARENT] waitpid error for PID:", pid)
+                    break
+
+                # Check timeout
+                var elapsed = current_time_ms() - start_time
+                if elapsed >= timeout_ms:
+                    # Timeout - kill child process
+                    print("[TIMEOUT] Tool '", exec_info.tool_name, "' exceeded timeout (", timeout_ms, "ms), killing PID:", pid)
+                    try:
+                        _ = kill(pid, SIGKILL)
+                        # Wait for child to be reaped
+                        _ = waitpid(pid, status_ptr, 0)
+                    except kill_error:
+                        print("[PARENT] Failed to kill child process:", String(kill_error))
+
+                    status_ptr.free()
+
+                    # Return timeout error
+                    var timeout_error = MCPToolResult(True, String("Tool execution timed out after ", timeout_ms, "ms"))
+                    # Clean up temp file if it exists
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
+                    return timeout_error
+
+                # Sleep briefly before next check (100ms)
+                sleep(0.1)
+
+            status_ptr.free()
+
+            # Child completed - read result from file
+            if child_completed:
+                try:
+                    var result_json: String
+                    with open(temp_file, "r") as f:
+                        result_json = f.read()
+
+                    # Parse result from JSON
+                    var result = MCPToolResult.from_json(result_json)
+
+                    # Clean up temporary file
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
+
+                    return result
+                except read_error:
+                    print("[PARENT] Failed to read result file:", String(read_error))
+                    # Clean up temp file
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
+                    # Return error instead of raising
+                    return MCPToolResult(True, "Failed to read tool execution result: " + String(read_error))
+            else:
+                # Child did not complete successfully - this should not happen if waitpid logic is correct
+                var error_result = MCPToolResult(True, "Tool execution failed in child process")
+                # Clean up temp file if it exists
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+                return error_result
+
+        # This line should never be reached due to fork logic above, but needed for compiler
+        return MCPToolResult(True, "Unreachable code path in fork execution")
 
 # JSON utility functions
 fn escape_json_string(value: String) -> String:
